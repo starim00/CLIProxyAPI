@@ -184,6 +184,13 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	body, _ = sjson.DeleteBytes(body, "session_id")
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 
+	var anti *helps.AntiTruncation
+	if action != "countTokens" {
+		body, anti, err = helps.PrepareAntiTruncation(e.cfg, baseModel, body, "", false)
+		if err != nil {
+			return resp, err
+		}
+	}
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -214,7 +221,10 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, err := httpClient.Do(httpReq)
+	httpResp, err := anti.Do(httpClient, httpReq, func(next []byte) (*http.Request, error) {
+		next = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", next, originalTranslated, requestedModel, requestPath, opts.Headers)
+		return helps.RebuildAntiTruncationRequest(httpReq, next), nil
+	})
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		return resp, err
@@ -303,6 +313,10 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	body, _ = sjson.DeleteBytes(body, "session_id")
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 
+	body, anti, err := helps.PrepareAntiTruncation(e.cfg, baseModel, body, "", true)
+	if err != nil {
+		return nil, err
+	}
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -333,7 +347,10 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, err := httpClient.Do(httpReq)
+	httpResp, err := anti.Do(httpClient, httpReq, func(next []byte) (*http.Request, error) {
+		next = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", next, originalTranslated, requestedModel, requestPath, opts.Headers)
+		return helps.RebuildAntiTruncationRequest(httpReq, next), nil
+	})
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		return nil, err

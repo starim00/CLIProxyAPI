@@ -15,6 +15,9 @@ type ModelCatalogs = internalconfig.ModelCatalogs
 type ClientConfig = internalconfig.ClientConfig
 type CodexClientConfig = internalconfig.CodexClientConfig
 type StreamingConfig = internalconfig.StreamingConfig
+
+// AntiTruncationConfig enables bounded synthetic-answer continuation.
+type AntiTruncationConfig = internalconfig.AntiTruncationConfig
 type ClaudeCodeConfig = internalconfig.ClaudeCodeConfig
 type TLSConfig = internalconfig.TLSConfig
 type DiscoveryConfig = internalconfig.DiscoveryConfig

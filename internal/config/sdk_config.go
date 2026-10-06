@@ -98,6 +98,9 @@ type ClaudeCodeConfig struct {
 
 // StreamingConfig holds server streaming behavior configuration.
 type StreamingConfig struct {
+	// AntiTruncation enables bounded synthetic-answer continuation for selected Gemini models.
+	AntiTruncation AntiTruncationConfig `yaml:"anti-truncation,omitempty" json:"anti-truncation,omitempty"`
+
 	// KeepAliveSeconds controls how often the server emits SSE heartbeats (": keep-alive\n\n")
 	// or WebSocket Ping control frames.
 	// <= 0 disables keep-alives. Default is 0.
@@ -107,4 +110,13 @@ type StreamingConfig struct {
 	// to allow auth rotation / transient recovery.
 	// <= 0 disables bootstrap retries. Default is 0.
 	BootstrapRetries int `yaml:"bootstrap-retries,omitempty" json:"bootstrap-retries,omitempty"`
+}
+
+// AntiTruncationConfig applies to Gemini and Antigravity generation only.
+type AntiTruncationConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// Models matches upstream model IDs with shell-style patterns; empty means gemini-*.
+	Models []string `yaml:"models,omitempty" json:"models,omitempty"`
+	// MaxAttempts includes the initial request. Zero defaults to 3; the hard limit is 10.
+	MaxAttempts int `yaml:"max-attempts,omitempty" json:"max-attempts,omitempty"`
 }

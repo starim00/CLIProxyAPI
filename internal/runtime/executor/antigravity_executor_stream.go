@@ -124,12 +124,18 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		}
 	}
 	requestPayload = ensureAntigravityGeminiBoundaryUserContent(baseModel, requestPayload)
+	requestPayload, anti, err := helps.PrepareAntiTruncation(e.cfg, baseModel, requestPayload, "request", true)
+	if err != nil {
+		return nil, err
+	}
 	httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, true, opts.Alt, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
 	if errReq != nil {
 		err = errReq
 		return nil, err
 	}
-	httpResp, errDo := helps.WithAntigravityHTTPClientTrace(httpClient, auth, "generate_stream").Do(httpReq)
+	httpResp, errDo := anti.Do(helps.WithAntigravityHTTPClientTrace(httpClient, auth, "generate_stream"), httpReq, func(next []byte) (*http.Request, error) {
+		return e.buildRequest(ctx, auth, token, baseModel, next, true, opts.Alt, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
+	})
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 		if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
@@ -193,6 +199,11 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		clearAntigravityCreditsFailureState(auth)
 	}
 	replayAccumulator := newAntigravityReasoningReplayAccumulator(replayScope, requestPayload)
+	if anti != nil {
+		// Reconstructed answers can combine multiple signed upstream turns.
+		// They must not be cached as one native reasoning replay segment.
+		replayAccumulator = nil
+	}
 	out := make(chan cliproxyexecutor.StreamChunk)
 	stopDeliverySupport := usage.SupportStreamDelivery(ctx)
 	go func(resp *http.Response) {

@@ -217,6 +217,10 @@ requests:
   # streaming:
   #   keepalive-seconds: 15   # Default: 0 (disabled). <= 0 disables keep-alives.
   #   bootstrap-retries: 1    # Default: 0 (disabled). Retries before first byte is sent.
+  #   anti-truncation:        # Gemini / Antigravity generation; see docs/anti-truncation.md.
+  #     enabled: false       # Opt-in synthetic answer tool plus bounded continuation.
+  #     models: ["gemini-*"] # Matches resolved upstream model IDs, not client aliases.
+  #     max-attempts: 3      # Includes initial request; hard limit 10.
 
   # Optional payload configuration
   # payload:
