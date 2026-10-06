@@ -14,11 +14,44 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
 const antiTruncationTool = "cpa_emit_answer"
+
+// AntiTruncationModelPrefix exposes opt-in variants without changing ordinary models.
+const AntiTruncationModelPrefix = "抗截断/"
+
+// AntiTruncationMatches checks the configured upstream model allowlist.
+func AntiTruncationMatches(c config.AntiTruncationConfig, model string) bool {
+	if !c.Enabled {
+		return false
+	}
+	patterns := c.Models
+	if len(patterns) == 0 {
+		patterns = []string{"gemini-*"}
+	}
+	for _, pattern := range patterns {
+		if ok, _ := path.Match(pattern, model); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// PrepareAntiTruncationForRequest requires explicit selection by the API handler.
+func PrepareAntiTruncationForRequest(cfg *config.Config, model string, body []byte, root string, stream bool, opts coreexecutor.Options) ([]byte, *AntiTruncation, error) {
+	if enabled, _ := opts.Metadata[coreexecutor.AntiTruncationMetadataKey].(bool); !enabled {
+		return body, nil, nil
+	}
+	if cfg == nil || !AntiTruncationMatches(cfg.Streaming.AntiTruncation, model) {
+		return nil, nil, errors.New("anti-truncation: resolved upstream model is not enabled")
+	}
+	return PrepareAntiTruncation(cfg, model, body, root, stream)
+}
+
 const antiTruncationLimit = 16 << 20
 const antiTruncationInstruction = "Use cpa_emit_answer to deliver your complete final answer in its content string. Other tools remain available when needed. Do not duplicate the final answer outside cpa_emit_answer."
 
@@ -38,16 +71,7 @@ func PrepareAntiTruncation(cfg *config.Config, model string, body []byte, root s
 		return body, nil, nil
 	}
 	c := cfg.Streaming.AntiTruncation
-	patterns := c.Models
-	if len(patterns) == 0 {
-		patterns = []string{"gemini-*"}
-	}
-	matched := false
-	for _, pattern := range patterns {
-		ok, _ := path.Match(pattern, model)
-		matched = matched || ok
-	}
-	if !matched {
+	if !AntiTruncationMatches(c, model) {
 		return body, nil, nil
 	}
 	prefix := ""

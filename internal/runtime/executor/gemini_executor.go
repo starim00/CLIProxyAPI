@@ -186,7 +186,7 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 
 	var anti *helps.AntiTruncation
 	if action != "countTokens" {
-		body, anti, err = helps.PrepareAntiTruncation(e.cfg, baseModel, body, "", false)
+		body, anti, err = helps.PrepareAntiTruncationForRequest(e.cfg, baseModel, body, "", false, opts)
 		if err != nil {
 			return resp, err
 		}
@@ -313,7 +313,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	body, _ = sjson.DeleteBytes(body, "session_id")
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 
-	body, anti, err := helps.PrepareAntiTruncation(e.cfg, baseModel, body, "", true)
+	body, anti, err := helps.PrepareAntiTruncationForRequest(e.cfg, baseModel, body, "", true, opts)
 	if err != nil {
 		return nil, err
 	}

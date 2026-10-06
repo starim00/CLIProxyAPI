@@ -122,7 +122,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	}
 	requestPayload = ensureAntigravityGeminiBoundaryUserContent(baseModel, requestPayload)
 
-	requestPayload, anti, err := helps.PrepareAntiTruncation(e.cfg, baseModel, requestPayload, "request", false)
+	requestPayload, anti, err := helps.PrepareAntiTruncationForRequest(e.cfg, baseModel, requestPayload, "request", false, opts)
 	if err != nil {
 		return resp, err
 	}
@@ -338,7 +338,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 		}
 	}
 	requestPayload = ensureAntigravityGeminiBoundaryUserContent(baseModel, requestPayload)
-	requestPayload, anti, err := helps.PrepareAntiTruncation(e.cfg, baseModel, requestPayload, "request", true)
+	requestPayload, anti, err := helps.PrepareAntiTruncationForRequest(e.cfg, baseModel, requestPayload, "request", true, opts)
 	if err != nil {
 		return resp, err
 	}

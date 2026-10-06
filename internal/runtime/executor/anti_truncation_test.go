@@ -12,11 +12,51 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	"github.com/tidwall/gjson"
 )
+
+func TestAntiTruncationOrdinaryRequestUnchanged(t *testing.T) {
+	cfg := &config.Config{SDKConfig: config.SDKConfig{Streaming: config.StreamingConfig{AntiTruncation: config.AntiTruncationConfig{Enabled: true}}}}
+	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`)
+	out, anti, err := helps.PrepareAntiTruncationForRequest(cfg, "gemini-test", body, "", false, cliproxyexecutor.Options{})
+	if err != nil || anti != nil || !bytes.Equal(out, body) {
+		t.Fatalf("ordinary request changed: %s %v", out, err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		payload, _ := io.ReadAll(r.Body)
+		if bytes.Contains(payload, []byte("cpa_emit_answer")) {
+			t.Error("ordinary model injected synthetic tool")
+		}
+		data := `{"candidates":[{"content":{"role":"model","parts":[{"text":"ordinary"}]},"finishReason":"STOP"}]}`
+		if strings.Contains(r.URL.Path, "streamGenerateContent") {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprintf(w, "data: %s\n\n", data)
+		} else {
+			_, _ = io.WriteString(w, data)
+		}
+	}))
+	defer server.Close()
+	e := NewGeminiExecutor(cfg)
+	auth := &cliproxyauth.Auth{ID: "ordinary", Provider: "gemini", Attributes: map[string]string{"api_key": "mock", "base_url": server.URL}}
+	req := cliproxyexecutor.Request{Model: "gemini-test", Payload: []byte(`{"messages":[{"role":"user","content":"hello"}]}`)}
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI}
+	if _, err := e.Execute(context.Background(), auth, req, opts); err != nil {
+		t.Fatal(err)
+	}
+	stream, err := e.ExecuteStream(context.Background(), auth, req, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for chunk := range stream.Chunks {
+		if chunk.Err != nil {
+			t.Fatal(chunk.Err)
+		}
+	}
+}
 
 // Exercise the production executors, their final payload rules and their
 // downstream translators; no provider credentials or public API calls are used.
@@ -58,7 +98,7 @@ func TestAntiTruncationExecutors(t *testing.T) {
 					model = "gemini-3-pro-preview"
 				}
 				req := cliproxyexecutor.Request{Model: model, Payload: []byte(`{"messages":[{"role":"user","content":"hello"}],"top_p":0.8}`)}
-				opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI}
+				opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, Metadata: map[string]any{cliproxyexecutor.AntiTruncationMetadataKey: true}}
 				var execute func(context.Context, *cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error)
 				var executeStream func(context.Context, *cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error)
 				if provider == "gemini" {

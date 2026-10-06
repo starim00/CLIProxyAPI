@@ -98,7 +98,7 @@ type ClaudeCodeConfig struct {
 
 // StreamingConfig holds server streaming behavior configuration.
 type StreamingConfig struct {
-	// AntiTruncation enables bounded synthetic-answer continuation for selected Gemini models.
+	// AntiTruncation exposes opt-in prefixed models with bounded synthetic-answer continuation.
 	AntiTruncation AntiTruncationConfig `yaml:"anti-truncation,omitempty" json:"anti-truncation,omitempty"`
 
 	// KeepAliveSeconds controls how often the server emits SSE heartbeats (": keep-alive\n\n")

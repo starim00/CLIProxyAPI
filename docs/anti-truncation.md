@@ -21,7 +21,15 @@ requests:
 
 Merge this into the existing `requests.streaming` mapping. With the legacy
 configuration layout, put `streaming` at the top level instead. The feature is
-disabled by default and applies to both streaming and non-streaming generation.
+disabled by default. Enabling it adds opt-in `抗截断/<model ID>` entries to model
+lists for supported models. Ordinary model IDs retain their original behavior.
+Select a prefixed entry for streaming or non-streaming anti-truncation generation:
+
+- `gemini-3.7-flash` → `抗截断/gemini-3.7-flash`
+- `api/Gemini 3.7 Flash` → `抗截断/api/Gemini 3.7 Flash`
+
+The outer prefix is removed before credential selection and upstream translation.
+Existing aliases, credential prefixes, and thinking suffixes are preserved.
 Patterns match resolved upstream model IDs; an empty list defaults to `gemini-*`.
 Antigravity Claude models can be selected explicitly with `claude-*`.
 `max-attempts` includes the first request, defaults to 3 for non-positive values,
@@ -58,7 +66,9 @@ and is capped at 10. Each additional attempt consumes upstream quota and tokens.
 
 Supported paths are Gemini `generateContent` / `streamGenerateContent` with API keys
 and Antigravity generation (including its streaming-to-non-streaming adapter).
-Native Interactions, token counting, and other providers are unchanged. Multiple
+Home dispatch, plugin executors, native Interactions, and image endpoints do not
+support prefixed models. Token counting accepts a prefixed model but counts the
+ordinary request without synthetic tools or continuation. Other providers are unchanged. Multiple
 response candidates are not supported with this feature enabled.
 
 Continuation asks the model to resume; it is not a token-cursor replay protocol.
@@ -74,6 +84,6 @@ unmodified upstream stream when diagnosing provider-specific behavior.
 ## Verification
 
 ```sh
-go test ./internal/config ./internal/runtime/executor/helps ./internal/runtime/executor -run AntiTruncation -count=1
+go test ./internal/config ./internal/runtime/executor/helps ./internal/runtime/executor ./sdk/api/handlers/... -run AntiTruncation -count=1
 go build -o cli-proxy-api ./cmd/server
 ```

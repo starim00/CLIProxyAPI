@@ -282,6 +282,16 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 }
 
 func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
+	modelName, rawJSON, antiSelected, antiErr := h.resolveAntiTruncationModel(modelName, rawJSON, entryProtocol, allowImageModel)
+	antiFailure := func(err *interfaces.ErrorMessage) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
+		errs := make(chan *interfaces.ErrorMessage, 1)
+		errs <- err
+		close(errs)
+		return nil, nil, errs
+	}
+	if antiErr != nil {
+		return antiFailure(antiErr)
+	}
 	originalRequestedModel := modelName
 	routeDecision, preparedRoute := preparedModelRouteFromContext(ctx, execOptions.SkipRouterPluginID)
 	if !preparedRoute {
@@ -295,6 +305,9 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		return nil, nil, errChan
 	}
 	if routeDecision.ExecutorPluginID != "" {
+		if antiSelected {
+			return antiFailure(antiTruncationRequestError())
+		}
 		return h.streamWithPluginExecutor(ctx, entryProtocol, responseProtocol, modelName, originalRequestedModel, rawJSON, alt, routeDecision.ExecutorPluginID, execOptions)
 	}
 	providers, normalizedModel, errMsg := h.providersForExecution(modelName, originalRequestedModel, allowImageModel, routeDecision, execOptions)
@@ -305,7 +318,12 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		return nil, nil, errChan
 	}
 	providers = adjustExecutionProvidersForEntryProtocol(entryProtocol, providers)
+	providers, antiErr = antiTruncationProviders(providers, antiSelected)
+	if antiErr != nil {
+		return antiFailure(antiErr)
+	}
 	reqMeta := requestExecutionMetadata(ctx)
+	reqMeta[coreexecutor.AntiTruncationMetadataKey] = antiSelected
 	if execOptions.Path != "" {
 		reqMeta[coreexecutor.RequestPathMetadataKey] = execOptions.Path
 	}

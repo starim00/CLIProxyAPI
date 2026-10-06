@@ -94,6 +94,9 @@ func (h *BaseAPIHandler) PrepareStreamModelRoute(ctx context.Context, handlerTyp
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if resolved, body, _, errMsg := h.resolveAntiTruncationModel(modelName, rawJSON, handlerType, false); errMsg == nil {
+		modelName, rawJSON = resolved, body
+	}
 	decision := h.applyModelRouter(ctx, handlerType, modelName, rawJSON, true, modelExecutionOptions{})
 	ctx = context.WithValue(ctx, preparedModelRouteContextKey{}, decision)
 	hasOverride := strings.TrimSpace(decision.ExecutorPluginID) != "" || strings.TrimSpace(decision.Provider) != ""

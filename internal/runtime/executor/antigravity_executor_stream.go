@@ -124,7 +124,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		}
 	}
 	requestPayload = ensureAntigravityGeminiBoundaryUserContent(baseModel, requestPayload)
-	requestPayload, anti, err := helps.PrepareAntiTruncation(e.cfg, baseModel, requestPayload, "request", true)
+	requestPayload, anti, err := helps.PrepareAntiTruncationForRequest(e.cfg, baseModel, requestPayload, "request", true, opts)
 	if err != nil {
 		return nil, err
 	}
