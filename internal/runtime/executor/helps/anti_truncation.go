@@ -53,7 +53,20 @@ func PrepareAntiTruncationForRequest(cfg *config.Config, model string, body []by
 }
 
 const antiTruncationLimit = 16 << 20
-const antiTruncationInstruction = "Use cpa_emit_answer to deliver your complete final answer in its content string. Other tools remain available when needed. Do not duplicate the final answer outside cpa_emit_answer."
+const antiTruncationInstruction = "严格执行以下输出规则：\n\n" +
+	"1. 你必须调用 `cpa_emit_answer` 工具来输出你的最终回答\n" +
+	"2. 将完整的回答内容放入该工具的 `content` 参数中\n" +
+	"3. 不要在普通文本中输出任何内容，所有回答必须通过 `cpa_emit_answer` 工具输出\n" +
+	"4. 如果你的回答被截断，系统会要求你继续输出剩余内容\n" +
+	"5. 续传时，将剩余内容继续通过 `cpa_emit_answer` 工具输出\n\n" +
+	"这个规则对于确保输出完整性极其重要，请严格遵守。"
+
+const antiTruncationContinuationInstruction = "你之前的回复被截断了。请调用 `cpa_emit_answer` 工具继续输出剩余的所有内容。\n\n" +
+	"重要提醒：\n" +
+	"1. 不要重复前面已经输出的内容\n" +
+	"2. 直接继续输出，无需任何前言或解释\n" +
+	"3. 将剩余内容放入 `cpa_emit_answer` 工具的 `content` 参数中\n\n" +
+	"现在请继续输出："
 
 // AntiTruncation retains an unconfigured request so every continuation passes
 // through the executor's normal payload finalizer exactly once.
@@ -93,7 +106,7 @@ func PrepareAntiTruncation(cfg *config.Config, model string, body []byte, root s
 			}
 		}
 	}
-	declaration := json.RawMessage(`{"functionDeclarations":[{"name":"cpa_emit_answer","description":"Deliver the complete final user-visible answer.","parameters":{"type":"object","properties":{"content":{"type":"string"}},"required":["content"]}}]}`)
+	declaration := json.RawMessage(`{"functionDeclarations":[{"name":"cpa_emit_answer","description":"You MUST call this tool exactly once to output your final user-visible answer. Put the complete answer in the 'content' argument. Do NOT output any text outside this tool call.","parameters":{"type":"object","properties":{"content":{"type":"string","description":"The complete final answer to output to the user."}},"required":["content"]}}]}`)
 	out, err := sjson.SetBytes(body, prefix+"tools.-1", declaration)
 	if err != nil {
 		return nil, nil, err
@@ -353,7 +366,7 @@ func (a *AntiTruncation) continuation(text string) ([]byte, error) {
 			return nil, err
 		}
 	}
-	return sjson.SetBytes(body, prefix+"contents.-1", map[string]any{"role": "user", "parts": []any{map[string]string{"text": "The previous answer was interrupted. Continue from its last character without repeating it. Use cpa_emit_answer with only the remaining answer."}}})
+	return sjson.SetBytes(body, prefix+"contents.-1", map[string]any{"role": "user", "parts": []any{map[string]string{"text": antiTruncationContinuationInstruction}}})
 }
 
 func (a *AntiTruncation) run(ctx context.Context, client *http.Client, body io.ReadCloser, rebuild func([]byte) (*http.Request, error), output io.Writer) error {
