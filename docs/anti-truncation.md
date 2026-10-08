@@ -1,8 +1,7 @@
 # Gemini and Antigravity anti-truncation
 
-This fork provides an optional synthetic-answer tool and bounded continuation,
-corresponding to the anti-truncation workflow in
-[gcli2api](https://github.com/su-kaka/gcli2api/blob/master/src/converter/anti_truncation.py).
+This fork provides an optional synthetic-answer tool and bounded continuation.
+Tool injection follows the Kemini_Dramatron_v3.1 preset's transport script.
 The Go implementation uses CPA's existing executors and protocol translators.
 
 ## Configuration
@@ -37,8 +36,23 @@ and is capped at 10. Each additional attempt consumes upstream quota and tokens.
 
 ## Behavior
 
-- The request adds `cpa_emit_answer(content: string)` without replacing existing
-  tools or system instructions. Its name is reserved while this feature is enabled.
+- The request adds `emit_complete_response_<24 lowercase hex characters>(content: string)`.
+  The suffix comes from 12 cryptographically random bytes; existing tool names are
+  checked for collisions. A continuation keeps the same name. Only that exact tool
+  is consumed; client tools with the same prefix remain client tools.
+- For OpenAI chat requests, injection happens before protocol translation. A system
+  control message is inserted immediately before the first message whose string
+  content contains `<format>`. Without that anchor it is appended as a system message,
+  or as a user message when the last message is an assistant message. The tool schema,
+  description and control prompt match the preset script. Existing tools are preserved
+  and `tool_choice` is set to `auto`. Empty message lists and caller choices `none`,
+  `required`, or an object bypass injection and continuation entirely.
+- Other client protocols use native Gemini injection after translation with the same
+  randomized name, schema and control prompt. Native Gemini has no inline system role:
+  the prompt is appended to `systemInstruction`, or as a user turn after a model turn.
+  Native `NONE`, `ANY`, or a function allowlist bypass injection. CPA's translators
+  retain their existing treatment of inline system messages, including system-reminder
+  wrappers where required by the destination protocol.
 - Synthetic tool results become normal assistant text before CPA translates the
   response to OpenAI, Gemini, Claude, or Responses format. Real tool calls retain
   their arguments and signatures and are returned to the client without continuation.
@@ -48,6 +62,7 @@ and is capped at 10. Each additional attempt consumes upstream quota and tokens.
   trigger another request using the same credential. The original conversation
   plus the accumulated visible answer and a continuation instruction is rebuilt
   for every attempt; previous continuation prompts are not appended repeatedly.
+  This bounded continuation is CPA behavior in addition to the preset's injection.
 - Explicit refusal/blocking finish reasons and prompt blocks are returned without
   automatic continuation. HTTP failures and malformed response events are reported.
 - User payload rules run last on every attempt. Overrides and filters can therefore

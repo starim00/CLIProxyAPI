@@ -19,8 +19,6 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-const antiTruncationTool = "cpa_emit_answer"
-
 // AntiTruncationModelPrefix exposes opt-in variants without changing ordinary models.
 const AntiTruncationModelPrefix = "抗截断/"
 
@@ -49,28 +47,19 @@ func PrepareAntiTruncationForRequest(cfg *config.Config, model string, body []by
 	if cfg == nil || !AntiTruncationMatches(cfg.Streaming.AntiTruncation, model) {
 		return nil, nil, errors.New("anti-truncation: resolved upstream model is not enabled")
 	}
-	return PrepareAntiTruncation(cfg, model, body, root, stream)
+	state, _ := opts.Metadata[antiTruncationPreparationKey].(antiTruncationPreparation)
+	if state.bypass {
+		return body, nil, nil
+	}
+	return prepareAntiTruncation(cfg, model, body, root, stream, state.toolName)
 }
 
 const antiTruncationLimit = 16 << 20
-const antiTruncationInstruction = "严格执行以下输出规则：\n\n" +
-	"1. 你必须调用 `cpa_emit_answer` 工具来输出你的最终回答\n" +
-	"2. 将完整的回答内容放入该工具的 `content` 参数中\n" +
-	"3. 不要在普通文本中输出任何内容，所有回答必须通过 `cpa_emit_answer` 工具输出\n" +
-	"4. 如果你的回答被截断，系统会要求你继续输出剩余内容\n" +
-	"5. 续传时，将剩余内容继续通过 `cpa_emit_answer` 工具输出\n\n" +
-	"这个规则对于确保输出完整性极其重要，请严格遵守。"
-
-const antiTruncationContinuationInstruction = "你之前的回复被截断了。请调用 `cpa_emit_answer` 工具继续输出剩余的所有内容。\n\n" +
-	"重要提醒：\n" +
-	"1. 不要重复前面已经输出的内容\n" +
-	"2. 直接继续输出，无需任何前言或解释\n" +
-	"3. 将剩余内容放入 `cpa_emit_answer` 工具的 `content` 参数中\n\n" +
-	"现在请继续输出："
 
 // AntiTruncation retains an unconfigured request so every continuation passes
 // through the executor's normal payload finalizer exactly once.
 type AntiTruncation struct {
+	toolName string
 	base     []byte
 	root     string
 	stream   bool
@@ -80,6 +69,10 @@ type AntiTruncation struct {
 // PrepareAntiTruncation runs after translation and before user payload rules.
 // Disabled and unmatched requests are returned byte-for-byte unchanged.
 func PrepareAntiTruncation(cfg *config.Config, model string, body []byte, root string, stream bool) ([]byte, *AntiTruncation, error) {
+	return prepareAntiTruncation(cfg, model, body, root, stream, "")
+}
+
+func prepareAntiTruncation(cfg *config.Config, model string, body []byte, root string, stream bool, toolName string) ([]byte, *AntiTruncation, error) {
 	if cfg == nil || !cfg.Streaming.AntiTruncation.Enabled {
 		return body, nil, nil
 	}
@@ -97,35 +90,47 @@ func PrepareAntiTruncation(cfg *config.Config, model string, body []byte, root s
 	if gjson.GetBytes(body, prefix+"generationConfig.candidateCount").Int() > 1 {
 		return nil, nil, errors.New("anti-truncation requires candidateCount <= 1")
 	}
+	existing := map[string]bool{}
 	for _, tool := range gjson.GetBytes(body, prefix+"tools").Array() {
 		for _, field := range []string{"functionDeclarations", "function_declarations"} {
 			for _, decl := range tool.Get(field).Array() {
-				if decl.Get("name").String() == antiTruncationTool {
-					return nil, nil, errors.New("anti-truncation: reserved tool name cpa_emit_answer is already in use")
-				}
+				existing[decl.Get("name").String()] = true
 			}
 		}
 	}
-	declaration := json.RawMessage(`{"functionDeclarations":[{"name":"cpa_emit_answer","description":"You MUST call this tool exactly once to output your final user-visible answer. Put the complete answer in the 'content' argument. Do NOT output any text outside this tool call.","parameters":{"type":"object","properties":{"content":{"type":"string","description":"The complete final answer to output to the user."}},"required":["content"]}}]}`)
-	out, err := sjson.SetBytes(body, prefix+"tools.-1", declaration)
-	if err != nil {
-		return nil, nil, err
-	}
-	out, err = sjson.SetBytes(out, prefix+"systemInstruction.parts.-1", map[string]string{"text": antiTruncationInstruction})
-	if err != nil {
-		return nil, nil, err
-	}
-	modePath := prefix + "toolConfig.functionCallingConfig.mode"
-	mode := gjson.GetBytes(out, modePath).String()
-	if mode == "" || mode == "NONE" {
-		out, err = sjson.SetBytes(out, modePath, "AUTO")
+	out := body
+	if toolName != "" {
+		if !existing[toolName] {
+			return nil, nil, errors.New("anti-truncation: translated request lost the injected tool")
+		}
+	} else {
+		// Native Gemini has no inline system messages. Keep its protocol's
+		// systemInstruction representation while respecting explicit tool control.
+		modePath := prefix + "toolConfig.functionCallingConfig.mode"
+		mode := gjson.GetBytes(body, modePath).String()
+		if mode == "NONE" || mode == "ANY" || gjson.GetBytes(body, prefix+"toolConfig.functionCallingConfig.allowedFunctionNames").Exists() {
+			return body, nil, nil
+		}
+		var err error
+		toolName, err = randomAntiTruncationTool(existing)
 		if err != nil {
 			return nil, nil, err
 		}
-	}
-	allowed := prefix + "toolConfig.functionCallingConfig.allowedFunctionNames"
-	if gjson.GetBytes(out, allowed).IsArray() {
-		out, err = sjson.SetBytes(out, allowed+".-1", antiTruncationTool)
+		out, err = sjson.SetBytes(out, prefix+"tools.-1", map[string]any{"functionDeclarations": []any{antiTruncationDeclaration(toolName)}})
+		if err != nil {
+			return nil, nil, err
+		}
+		contents := gjson.GetBytes(out, prefix+"contents").Array()
+		promptPath := prefix + "systemInstruction.parts.-1"
+		if len(contents) > 0 && contents[len(contents)-1].Get("role").String() == "model" {
+			out, err = sjson.SetBytes(out, prefix+"contents.-1", map[string]any{"role": "user", "parts": []any{map[string]string{"text": antiTruncationInstruction(toolName)}}})
+		} else {
+			out, err = sjson.SetBytes(out, promptPath, map[string]string{"text": antiTruncationInstruction(toolName)})
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		out, err = sjson.SetBytes(out, modePath, "AUTO")
 		if err != nil {
 			return nil, nil, err
 		}
@@ -137,7 +142,7 @@ func PrepareAntiTruncation(cfg *config.Config, model string, body []byte, root s
 	if attempts > 10 {
 		attempts = 10
 	}
-	return out, &AntiTruncation{base: bytes.Clone(out), root: root, stream: stream, attempts: attempts}, nil
+	return out, &AntiTruncation{toolName: toolName, base: bytes.Clone(out), root: root, stream: stream, attempts: attempts}, nil
 }
 
 type antiTruncationBody struct {
@@ -202,6 +207,7 @@ func (b *antiTruncationHTTPBody) Close() error { defer b.cancel(); return b.Read
 // antiAnswer is one attempt, buffered to avoid duplicating ordinary text when
 // the same answer is also returned via the synthetic tool.
 type antiAnswer struct {
+	toolName  string
 	template  map[string]any
 	envelope  map[string]any
 	candidate map[string]any
@@ -261,7 +267,7 @@ func (r *antiAnswer) observe(data []byte) error {
 				return errors.New("anti-truncation: invalid response part")
 			}
 			if call, ok := part["functionCall"].(map[string]any); ok {
-				if call["name"] == antiTruncationTool {
+				if r.toolName != "" && call["name"] == r.toolName {
 					args, ok := call["args"].(map[string]any)
 					if !ok {
 						return errors.New("anti-truncation: invalid synthetic tool arguments")
@@ -302,8 +308,11 @@ func (r *antiAnswer) cleanParts() ([]any, string) {
 	return parts, text.String()
 }
 
-func readAntiAnswer(body io.Reader, stream bool) (antiAnswer, error) {
+func readAntiAnswer(body io.Reader, stream bool, toolNames ...string) (antiAnswer, error) {
 	var result antiAnswer
+	if len(toolNames) > 0 {
+		result.toolName = toolNames[0]
+	}
 	if !stream {
 		data, err := io.ReadAll(io.LimitReader(body, antiTruncationLimit+1))
 		if err != nil {
@@ -366,7 +375,8 @@ func (a *AntiTruncation) continuation(text string) ([]byte, error) {
 			return nil, err
 		}
 	}
-	return sjson.SetBytes(body, prefix+"contents.-1", map[string]any{"role": "user", "parts": []any{map[string]string{"text": antiTruncationContinuationInstruction}}})
+	instruction := "Your previous reply was truncated. Continue only the remaining reply without repeating previous content or adding an introduction. " + antiTruncationInstruction(a.toolName)
+	return sjson.SetBytes(body, prefix+"contents.-1", map[string]any{"role": "user", "parts": []any{map[string]string{"text": instruction}}})
 }
 
 func (a *AntiTruncation) run(ctx context.Context, client *http.Client, body io.ReadCloser, rebuild func([]byte) (*http.Request, error), output io.Writer) error {
@@ -379,7 +389,7 @@ func (a *AntiTruncation) run(ctx context.Context, client *http.Client, body io.R
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		answer, readErr := readAntiAnswer(body, a.stream)
+		answer, readErr := readAntiAnswer(body, a.stream, a.toolName)
 		_ = body.Close()
 		if err := ctx.Err(); err != nil {
 			return err

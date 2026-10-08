@@ -28,7 +28,7 @@ func TestAntiTruncationOrdinaryRequestUnchanged(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		payload, _ := io.ReadAll(r.Body)
-		if bytes.Contains(payload, []byte("cpa_emit_answer")) {
+		if bytes.Contains(payload, []byte("emit_complete_response_")) {
 			t.Error("ordinary model injected synthetic tool")
 		}
 		data := `{"candidates":[{"content":{"role":"model","parts":[{"text":"ordinary"}]},"finishReason":"STOP"}]}`
@@ -72,7 +72,11 @@ func TestAntiTruncationExecutors(t *testing.T) {
 					if len(requests) == 2 {
 						text, finish = "second", "STOP"
 					}
-					data := fmt.Sprintf(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"cpa_emit_answer","args":{"content":%q}}}]},"finishReason":%q}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3}}`, text, finish)
+					toolPath := "tools.0.functionDeclarations.0.name"
+					if provider != "gemini" {
+						toolPath = "request." + toolPath
+					}
+					data := fmt.Sprintf(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":%q,"args":{"content":%q}}}]},"finishReason":%q}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3}}`, gjson.GetBytes(body, toolPath).String(), text, finish)
 					if provider != "gemini" {
 						data = `{"response":` + data + `}`
 					}
@@ -135,7 +139,7 @@ func TestAntiTruncationExecutors(t *testing.T) {
 					output.Write(response.Payload)
 					text.WriteString(gjson.GetBytes(response.Payload, "choices.0.message.content").String())
 				}
-				if text.String() != "firstsecond" || strings.Contains(output.String(), "cpa_emit_answer") || len(requests) != 2 {
+				if text.String() != "firstsecond" || strings.Contains(output.String(), "emit_complete_response_") || len(requests) != 2 {
 					t.Fatalf("calls=%d output=%s", len(requests), output.String())
 				}
 				prefix := ""
@@ -149,12 +153,16 @@ func TestAntiTruncationExecutors(t *testing.T) {
 					if bytes.Count(body, []byte("final-marker")) != 1 {
 						t.Fatalf("payload rules applied more/less than once on attempt %d: %s", i, body)
 					}
-					if !bytes.Contains(body, []byte("cpa_emit_answer")) {
+					if !bytes.Contains(body, []byte("emit_complete_response_")) {
 						t.Fatalf("tool missing: %s", body)
 					}
 				}
-				if gjson.GetBytes(requests[1], prefix+"contents.#").Int() != 3 {
+				if gjson.GetBytes(requests[1], prefix+"contents.#").Int() != gjson.GetBytes(requests[0], prefix+"contents.#").Int()+2 {
 					t.Fatalf("continuation history malformed: %s", requests[1])
+				}
+				name := gjson.GetBytes(requests[0], prefix+"tools.0.functionDeclarations.0.name").String()
+				if gjson.GetBytes(requests[1], prefix+"tools.0.functionDeclarations.0.name").String() != name || bytes.Count(requests[0], []byte("Call the `"+name+"`")) != 1 {
+					t.Fatal("tool identity changed or prompt injected more than once")
 				}
 			})
 		}

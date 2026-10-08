@@ -21,7 +21,7 @@ func antiConfig(attempts int) *config.Config {
 }
 
 func TestAntiTruncationPrepare(t *testing.T) {
-	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"tools":[{"functionDeclarations":[{"name":"lookup"}]}],"toolConfig":{"functionCallingConfig":{"mode":"ANY","allowedFunctionNames":["lookup"]}},"systemInstruction":{"parts":[{"text":"existing"}]}}`)
+	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"tools":[{"functionDeclarations":[{"name":"lookup"}]}],"toolConfig":{"functionCallingConfig":{"mode":"AUTO"}},"systemInstruction":{"parts":[{"text":"existing"}]}}`)
 	original := bytes.Clone(body)
 	out, anti, err := PrepareAntiTruncation(antiConfig(3), "gemini-test", body, "", true)
 	if err != nil || anti == nil {
@@ -33,8 +33,8 @@ func TestAntiTruncationPrepare(t *testing.T) {
 	if gjson.GetBytes(out, "tools.#").Int() != 2 || gjson.GetBytes(out, "systemInstruction.parts.0.text").String() != "existing" {
 		t.Fatal(string(out))
 	}
-	if gjson.GetBytes(out, "toolConfig.functionCallingConfig.allowedFunctionNames.1").String() != antiTruncationTool {
-		t.Fatal("synthetic tool missing from allowlist")
+	if gjson.GetBytes(out, "tools.1.functionDeclarations.0.name").String() != anti.toolName || !strings.HasPrefix(anti.toolName, antiTruncationToolPrefix) {
+		t.Fatal("synthetic tool missing")
 	}
 	for _, cfg := range []*config.Config{nil, {}} {
 		got, state, err := PrepareAntiTruncation(cfg, "gemini-test", body, "", true)
@@ -46,8 +46,8 @@ func TestAntiTruncationPrepare(t *testing.T) {
 	if err != nil || state != nil || !bytes.Equal(got, body) {
 		t.Fatal("unmatched request changed")
 	}
-	if _, _, err := PrepareAntiTruncation(antiConfig(3), "gemini-test", out, "", true); err == nil {
-		t.Fatal("tool collision accepted")
+	if _, another, err := PrepareAntiTruncation(antiConfig(3), "gemini-test", out, "", true); err != nil || another.toolName == anti.toolName {
+		t.Fatal("tool names are not unique")
 	}
 	if _, _, err := PrepareAntiTruncation(antiConfig(3), "gemini-test", []byte(`{"generationConfig":{"candidateCount":2}}`), "", true); err == nil {
 		t.Fatal("multiple candidates accepted")
@@ -66,7 +66,11 @@ func TestAntiTruncationContinuation(t *testing.T) {
 					if len(requests) == 2 {
 						content, finish = "second", "STOP"
 					}
-					data := fmt.Sprintf(`{"candidates":[{"content":{"role":"model","parts":[{"text":"discard duplicate"},{"functionCall":{"name":"cpa_emit_answer","args":{"content":%q}}}]},"finishReason":%q}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":3,"totalTokenCount":5}}`, content, finish)
+					toolPath := "tools.0.functionDeclarations.0.name"
+					if wrapped {
+						toolPath = "request." + toolPath
+					}
+					data := fmt.Sprintf(`{"candidates":[{"content":{"role":"model","parts":[{"text":"discard duplicate"},{"functionCall":{"name":%q,"args":{"content":%q}}}]},"finishReason":%q}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":3,"totalTokenCount":5}}`, gjson.GetBytes(b, toolPath).String(), content, finish)
 					if wrapped {
 						data = `{"traceId":"retained","response":` + data + `}`
 					}
@@ -97,7 +101,7 @@ func TestAntiTruncationContinuation(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if len(requests) != 2 || bytes.Contains(data, []byte("cpa_emit_answer")) || bytes.Contains(data, []byte("discard duplicate")) {
+				if len(requests) != 2 || bytes.Contains(data, []byte(antiTruncationToolPrefix)) || bytes.Contains(data, []byte("discard duplicate")) {
 					t.Fatalf("requests=%d data=%s", len(requests), data)
 				}
 				answer, err := readAntiAnswer(bytes.NewReader(data), stream)
@@ -146,7 +150,9 @@ func TestAntiTruncationTerminalAndFailures(t *testing.T) {
 			var count atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				count.Add(1)
-				fmt.Fprintf(w, "data: %s\n\n", tc.response)
+				body, _ := io.ReadAll(r.Body)
+				name := gjson.GetBytes(body, "tools.0.functionDeclarations.0.name").String()
+				fmt.Fprintf(w, "data: %s\n\n", strings.ReplaceAll(tc.response, "cpa_emit_answer", name))
 			}))
 			defer server.Close()
 			body, a, err := PrepareAntiTruncation(antiConfig(3), "gemini-test", []byte(`{"contents":[]}`), "", true)
