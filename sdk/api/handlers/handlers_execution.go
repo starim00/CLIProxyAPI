@@ -45,6 +45,7 @@ func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType
 }
 
 func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) ([]byte, http.Header, *interfaces.ErrorMessage) {
+	antiV2 := strings.HasPrefix(modelName, helps.AntiTruncationV2ModelPrefix)
 	modelName, rawJSON, antiSelected, antiErr := h.resolveAntiTruncationModel(modelName, rawJSON, entryProtocol, allowImageModel)
 	if antiErr != nil {
 		return nil, nil, antiErr
@@ -74,6 +75,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.AntiTruncationMetadataKey] = antiSelected
+	reqMeta[coreexecutor.AntiTruncationV2MetadataKey] = antiSelected && antiV2
 	if execOptions.Path != "" {
 		reqMeta[coreexecutor.RequestPathMetadataKey] = execOptions.Path
 	}

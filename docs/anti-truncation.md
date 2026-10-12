@@ -1,7 +1,8 @@
 # Gemini and Antigravity anti-truncation
 
-This fork provides an optional synthetic-answer tool and bounded continuation.
-Tool injection follows the Kemini_Dramatron_v3.1 preset's transport script.
+This fork provides two optional synthetic-answer strategies. The original strategy
+follows the Kemini_Dramatron_v3.1 preset's transport script with bounded continuation.
+The v2 strategy follows Antigravity-gateway's default injection and empty-retry design.
 The Go implementation uses CPA's existing executors and protocol translators.
 
 ## Configuration
@@ -20,12 +21,14 @@ requests:
 
 Merge this into the existing `requests.streaming` mapping. With the legacy
 configuration layout, put `streaming` at the top level instead. The feature is
-disabled by default. Enabling it adds opt-in `抗截断/<model ID>` entries to model
+disabled by default. Enabling it adds opt-in `抗截断/<model ID>` and
+`抗截断-v2/<model ID>` entries to model
 lists for supported models. Ordinary model IDs retain their original behavior.
 Select a prefixed entry for streaming or non-streaming anti-truncation generation:
 
 - `gemini-3.7-flash` → `抗截断/gemini-3.7-flash`
 - `api/Gemini 3.7 Flash` → `抗截断/api/Gemini 3.7 Flash`
+- `gemini-3.8-flash-high` → `抗截断-v2/gemini-3.8-flash-high`
 
 The outer prefix is removed before credential selection and upstream translation.
 Existing aliases, credential prefixes, and thinking suffixes are preserved.
@@ -34,7 +37,7 @@ Antigravity Claude models can be selected explicitly with `claude-*`.
 `max-attempts` includes the first request, defaults to 3 for non-positive values,
 and is capped at 10. Each additional attempt consumes upstream quota and tokens.
 
-## Behavior
+## Original strategy: 抗截断/
 
 - The request adds `emit_complete_response_<24 lowercase hex characters>(content: string)`.
   The suffix comes from 12 cryptographically random bytes; existing tool names are
@@ -76,6 +79,48 @@ and is capped at 10. Each additional attempt consumes upstream quota and tokens.
   Canceling/closing the downstream response cancels the active upstream request.
 - The response buffer is capped at 16 MiB across attempts. Exhaustion or an unresolved
   truncation at the attempt limit returns an error rather than a fabricated success.
+
+## Gateway strategy: 抗截断-v2/
+
+The reference is [Antigravity-gateway v1.0.9, commit e83fc1a5](https://github.com/Xeltra233/Antigravity-gateway/tree/e83fc1a505e501d3ac6a13c12816df1ceb55b86b).
+Its default `prefer` mode, non-strict schema, system control role and tail placement
+are adapted to CPA's Gemini and Antigravity native transports.
+
+- Each request adds `agw_emit_<24 random lowercase hex characters>(content: string)`.
+  The tool description and control prompt match the reference. Existing tools remain
+  available. OpenAI `none` becomes `auto`; `required` and a specifically forced real
+  tool are preserved. This deliberately differs from v1's bypass policy.
+- The control prompt goes at the message tail. The last conversational role is found
+  by skipping trailing system/developer messages. Assistant/model endings and empty
+  or system-only conversations receive a user control turn; other endings receive a
+  system control message. V2 does not search for a `<format>` anchor.
+- Native Gemini input uses the same tool and prompt. An empty conversation or final
+  model turn receives a user control turn; otherwise the prompt goes in the native
+  system instruction. `NONE` becomes `AUTO`; other calling modes and allowlists remain.
+- Only the exact injected tool name is extracted. Its content takes precedence over
+  ordinary answer text, so the two sources are never concatenated. Genuine tool calls,
+  arguments, signatures and reasoning parts remain available to downstream translation.
+- Each decoded native SSE event containing synthetic content is forwarded immediately.
+  Plain-text fallback is held until the response ends to prevent duplicate answers if
+  a synthetic call arrives later. CPA receives native argument objects, not the reference
+  gateway's OpenAI argument-string deltas; it therefore does not import that byte-stream
+  decoder. Native `partialArgs` is not supported by this strategy.
+- A malformed own-tool argument **string** can be repaired locally: Markdown fences,
+  trailing commas, unclosed strings/braces, and raw newline/tab characters are handled
+  within the 16 MiB limit. Native argument objects must contain a string `content`.
+  Wrong schemas, incomplete escapes and malformed upstream envelopes remain errors;
+  repair does not guess alternative field names or modify real tools.
+- Empty replies retry the original prepared request with the same tool name and no
+  added conversation history. `max-attempts` is the shared CPA total-attempt limit
+  (default 3), rather than the reference's separate default of 3 additional retries.
+  Exhausted empty responses return an error. Replies containing tool calls, reasoning,
+  non-text parts, blocking reasons or output-limit finish reasons are not retried.
+- V2 never appends continuation requests for nonempty truncated output; it preserves
+  the upstream finish reason. Transport errors remain errors. Usage from empty attempts
+  is included, cancellation remains active, and payload rules run last once per attempt.
+- Non-text image/audio/video/embedding model names and canonical aliases do not receive
+  v2 entries. The ordinary and v1 model entries remain available according to their
+  existing eligibility rules. V2 shares the existing enable flag and model allowlist.
 
 ## Scope and limits
 

@@ -14,6 +14,9 @@ const RequestedModelMetadataKey = "requested_model"
 // AntiTruncationMetadataKey marks an explicitly selected anti-truncation model.
 const AntiTruncationMetadataKey = "anti_truncation"
 
+// AntiTruncationV2MetadataKey selects the gateway-compatible transport strategy.
+const AntiTruncationV2MetadataKey = "anti_truncation_v2"
+
 // RequestPathMetadataKey stores the inbound HTTP request path (e.g. "/v1/images/generations") in Options.Metadata.
 // It is optional and may be absent for non-HTTP executions.
 const RequestPathMetadataKey = "request_path"

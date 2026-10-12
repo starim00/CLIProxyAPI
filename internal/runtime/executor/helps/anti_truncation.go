@@ -22,6 +22,9 @@ import (
 // AntiTruncationModelPrefix exposes opt-in variants without changing ordinary models.
 const AntiTruncationModelPrefix = "抗截断/"
 
+// AntiTruncationV2ModelPrefix selects the gateway-compatible transport strategy.
+const AntiTruncationV2ModelPrefix = "抗截断-v2/"
+
 // AntiTruncationMatches checks the configured upstream model allowlist.
 func AntiTruncationMatches(c config.AntiTruncationConfig, model string) bool {
 	if !c.Enabled {
@@ -48,6 +51,9 @@ func PrepareAntiTruncationForRequest(cfg *config.Config, model string, body []by
 		return nil, nil, errors.New("anti-truncation: resolved upstream model is not enabled")
 	}
 	state, _ := opts.Metadata[antiTruncationPreparationKey].(antiTruncationPreparation)
+	if v2, _ := opts.Metadata[coreexecutor.AntiTruncationV2MetadataKey].(bool); v2 {
+		return prepareAntiTruncationV2(cfg, model, body, root, stream, state.toolName)
+	}
 	if state.bypass {
 		return body, nil, nil
 	}
@@ -59,6 +65,7 @@ const antiTruncationLimit = 16 << 20
 // AntiTruncation retains an unconfigured request so every continuation passes
 // through the executor's normal payload finalizer exactly once.
 type AntiTruncation struct {
+	v2       bool
 	toolName string
 	base     []byte
 	root     string
@@ -207,6 +214,7 @@ func (b *antiTruncationHTTPBody) Close() error { defer b.cancel(); return b.Read
 // antiAnswer is one attempt, buffered to avoid duplicating ordinary text when
 // the same answer is also returned via the synthetic tool.
 type antiAnswer struct {
+	v2        bool
 	toolName  string
 	template  map[string]any
 	envelope  map[string]any
@@ -268,6 +276,13 @@ func (r *antiAnswer) observe(data []byte) error {
 			}
 			if call, ok := part["functionCall"].(map[string]any); ok {
 				if r.toolName != "" && call["name"] == r.toolName {
+					if raw, ok := call["args"].(string); ok && r.v2 {
+						text, err := repairAntiTruncationV2Arguments(raw)
+						if err != nil {
+							return err
+						}
+						call["args"] = map[string]any{"content": text}
+					}
 					args, ok := call["args"].(map[string]any)
 					if !ok {
 						return errors.New("anti-truncation: invalid synthetic tool arguments")
@@ -313,10 +328,17 @@ func readAntiAnswer(body io.Reader, stream bool, toolNames ...string) (antiAnswe
 	if len(toolNames) > 0 {
 		result.toolName = toolNames[0]
 	}
+	return readAntiAnswerObserved(body, stream, result, nil)
+}
+
+func readAntiAnswerObserved(body io.Reader, stream bool, result antiAnswer, onEvent func(*antiAnswer, int) error) (antiAnswer, error) {
 	if !stream {
 		data, err := io.ReadAll(io.LimitReader(body, antiTruncationLimit+1))
 		if err != nil {
 			return result, err
+		}
+		if result.v2 && len(bytes.TrimSpace(data)) == 0 {
+			return result, nil
 		}
 		err = result.observe(data)
 		return result, err
@@ -330,7 +352,11 @@ func readAntiAnswer(body io.Reader, stream bool, toolNames ...string) (antiAnswe
 			event = nil
 			return nil
 		}
+		start := len(result.parts)
 		err := result.observe(data)
+		if err == nil && onEvent != nil {
+			err = onEvent(&result, start)
+		}
 		event = nil
 		return err
 	}
@@ -380,6 +406,9 @@ func (a *AntiTruncation) continuation(text string) ([]byte, error) {
 }
 
 func (a *AntiTruncation) run(ctx context.Context, client *http.Client, body io.ReadCloser, rebuild func([]byte) (*http.Request, error), output io.Writer) error {
+	if a.v2 {
+		return a.runV2(ctx, client, body, rebuild, output)
+	}
 	defer func() { _ = body.Close() }()
 	var history strings.Builder
 	var allParts []any

@@ -61,110 +61,127 @@ func TestAntiTruncationOrdinaryRequestUnchanged(t *testing.T) {
 // Exercise the production executors, their final payload rules and their
 // downstream translators; no provider credentials or public API calls are used.
 func TestAntiTruncationExecutors(t *testing.T) {
-	for _, provider := range []string{"gemini", "antigravity", "antigravity-adapter"} {
-		for _, stream := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/stream=%v", provider, stream), func(t *testing.T) {
-				var requests [][]byte
-				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					body, _ := io.ReadAll(r.Body)
-					requests = append(requests, body)
-					text, finish := "first", "MAX_TOKENS"
-					if len(requests) == 2 {
-						text, finish = "second", "STOP"
+	for _, v2 := range []bool{false, true} {
+		toolPrefix, promptStart := "emit_complete_response_", "Call the `"
+		if v2 {
+			toolPrefix, promptStart = "agw_emit_", "Always use tool `"
+		}
+		for _, provider := range []string{"gemini", "antigravity", "antigravity-adapter"} {
+			for _, stream := range []bool{false, true} {
+				t.Run(fmt.Sprintf("v2=%v/%s/stream=%v", v2, provider, stream), func(t *testing.T) {
+					var requests [][]byte
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						body, _ := io.ReadAll(r.Body)
+						requests = append(requests, body)
+						text, finish := "first", "MAX_TOKENS"
+						if len(requests) == 2 {
+							text, finish = "second", "STOP"
+						}
+						if v2 {
+							text, finish = "firstsecond", "STOP"
+						}
+						toolPath := "tools.0.functionDeclarations.0.name"
+						if provider != "gemini" {
+							toolPath = "request." + toolPath
+						}
+						data := fmt.Sprintf(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":%q,"args":{"content":%q}}}]},"finishReason":%q}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3}}`, gjson.GetBytes(body, toolPath).String(), text, finish)
+						if v2 && len(requests) == 1 {
+							data = `{"candidates":[{"finishReason":"STOP"}]}`
+						}
+						if provider != "gemini" {
+							data = `{"response":` + data + `}`
+						}
+						if strings.Contains(r.URL.Path, "streamGenerateContent") {
+							w.Header().Set("Content-Type", "text/event-stream")
+							fmt.Fprintf(w, "data: %s\n\n", data)
+						} else {
+							w.Header().Set("Content-Type", "application/json")
+							_, _ = io.WriteString(w, data)
+						}
+					}))
+					defer server.Close()
+					cfg := &config.Config{SDKConfig: config.SDKConfig{Streaming: config.StreamingConfig{AntiTruncation: config.AntiTruncationConfig{Enabled: true, MaxAttempts: 3}}}}
+					protocol := provider
+					if provider == "antigravity-adapter" {
+						protocol = "antigravity"
 					}
-					toolPath := "tools.0.functionDeclarations.0.name"
-					if provider != "gemini" {
-						toolPath = "request." + toolPath
+					cfg.Payload.Override = []config.PayloadRule{{Models: []config.PayloadModelRule{{Name: "gemini-*", Protocol: protocol, FromProtocol: "openai"}}, Params: map[string]any{"generationConfig.temperature": 0.42, "systemInstruction.parts.-1": map[string]string{"text": "final-marker"}}}}
+					cfg.Payload.Filter = []config.PayloadFilterRule{{Models: []config.PayloadModelRule{{Name: "gemini-*", Protocol: protocol}}, Params: []string{"generationConfig.topP"}}}
+					auth := &cliproxyauth.Auth{ID: "anti-test-" + provider, Provider: protocol, Attributes: map[string]string{"api_key": "mock-key", "base_url": server.URL}, Metadata: map[string]any{"access_token": "mock-token", "project_id": "mock-project", "expiry": time.Now().Add(time.Hour).Format(time.RFC3339)}}
+					model := "gemini-test"
+					if provider == "antigravity-adapter" {
+						model = "gemini-3-pro-preview"
 					}
-					data := fmt.Sprintf(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":%q,"args":{"content":%q}}}]},"finishReason":%q}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3}}`, gjson.GetBytes(body, toolPath).String(), text, finish)
-					if provider != "gemini" {
-						data = `{"response":` + data + `}`
-					}
-					if strings.Contains(r.URL.Path, "streamGenerateContent") {
-						w.Header().Set("Content-Type", "text/event-stream")
-						fmt.Fprintf(w, "data: %s\n\n", data)
+					req := cliproxyexecutor.Request{Model: model, Payload: []byte(`{"messages":[{"role":"user","content":"hello"}],"top_p":0.8}`)}
+					opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, Metadata: map[string]any{cliproxyexecutor.AntiTruncationMetadataKey: true}}
+					opts.Metadata[cliproxyexecutor.AntiTruncationV2MetadataKey] = v2
+					var execute func(context.Context, *cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error)
+					var executeStream func(context.Context, *cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error)
+					if provider == "gemini" {
+						e := NewGeminiExecutor(cfg)
+						execute = e.Execute
+						executeStream = e.ExecuteStream
 					} else {
-						w.Header().Set("Content-Type", "application/json")
-						_, _ = io.WriteString(w, data)
+						e := NewAntigravityExecutor(cfg)
+						execute = e.Execute
+						executeStream = e.ExecuteStream
 					}
-				}))
-				defer server.Close()
-				cfg := &config.Config{SDKConfig: config.SDKConfig{Streaming: config.StreamingConfig{AntiTruncation: config.AntiTruncationConfig{Enabled: true, MaxAttempts: 3}}}}
-				protocol := provider
-				if provider == "antigravity-adapter" {
-					protocol = "antigravity"
-				}
-				cfg.Payload.Override = []config.PayloadRule{{Models: []config.PayloadModelRule{{Name: "gemini-*", Protocol: protocol, FromProtocol: "openai"}}, Params: map[string]any{"generationConfig.temperature": 0.42, "systemInstruction.parts.-1": map[string]string{"text": "final-marker"}}}}
-				cfg.Payload.Filter = []config.PayloadFilterRule{{Models: []config.PayloadModelRule{{Name: "gemini-*", Protocol: protocol}}, Params: []string{"generationConfig.topP"}}}
-				auth := &cliproxyauth.Auth{ID: "anti-test-" + provider, Provider: protocol, Attributes: map[string]string{"api_key": "mock-key", "base_url": server.URL}, Metadata: map[string]any{"access_token": "mock-token", "project_id": "mock-project", "expiry": time.Now().Add(time.Hour).Format(time.RFC3339)}}
-				model := "gemini-test"
-				if provider == "antigravity-adapter" {
-					model = "gemini-3-pro-preview"
-				}
-				req := cliproxyexecutor.Request{Model: model, Payload: []byte(`{"messages":[{"role":"user","content":"hello"}],"top_p":0.8}`)}
-				opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, Metadata: map[string]any{cliproxyexecutor.AntiTruncationMetadataKey: true}}
-				var execute func(context.Context, *cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error)
-				var executeStream func(context.Context, *cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error)
-				if provider == "gemini" {
-					e := NewGeminiExecutor(cfg)
-					execute = e.Execute
-					executeStream = e.ExecuteStream
-				} else {
-					e := NewAntigravityExecutor(cfg)
-					execute = e.Execute
-					executeStream = e.ExecuteStream
-				}
-				var output strings.Builder
-				var text strings.Builder
-				if stream {
-					response, err := executeStream(context.Background(), auth, req, opts)
-					if err != nil {
-						t.Fatal(err)
-					}
-					for chunk := range response.Chunks {
-						if chunk.Err != nil {
-							t.Fatal(chunk.Err)
+					var output strings.Builder
+					var text strings.Builder
+					if stream {
+						response, err := executeStream(context.Background(), auth, req, opts)
+						if err != nil {
+							t.Fatal(err)
 						}
-						output.Write(chunk.Payload)
-						for _, line := range bytes.Split(chunk.Payload, []byte("\n")) {
-							line = bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
-							text.WriteString(gjson.GetBytes(line, "choices.0.delta.content").String())
+						for chunk := range response.Chunks {
+							if chunk.Err != nil {
+								t.Fatal(chunk.Err)
+							}
+							output.Write(chunk.Payload)
+							for _, line := range bytes.Split(chunk.Payload, []byte("\n")) {
+								line = bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+								text.WriteString(gjson.GetBytes(line, "choices.0.delta.content").String())
+							}
+						}
+					} else {
+						response, err := execute(context.Background(), auth, req, opts)
+						if err != nil {
+							t.Fatal(err)
+						}
+						output.Write(response.Payload)
+						text.WriteString(gjson.GetBytes(response.Payload, "choices.0.message.content").String())
+					}
+					if text.String() != "firstsecond" || strings.Contains(output.String(), toolPrefix) || len(requests) != 2 {
+						t.Fatalf("calls=%d output=%s", len(requests), output.String())
+					}
+					prefix := ""
+					if protocol == "antigravity" {
+						prefix = "request."
+					}
+					for i, body := range requests {
+						if gjson.GetBytes(body, prefix+"generationConfig.temperature").Float() != 0.42 || gjson.GetBytes(body, prefix+"generationConfig.topP").Exists() {
+							t.Fatalf("payload rules lost on attempt %d: %s", i, body)
+						}
+						if bytes.Count(body, []byte("final-marker")) != 1 {
+							t.Fatalf("payload rules applied more/less than once on attempt %d: %s", i, body)
+						}
+						if !bytes.Contains(body, []byte(toolPrefix)) {
+							t.Fatalf("tool missing: %s", body)
 						}
 					}
-				} else {
-					response, err := execute(context.Background(), auth, req, opts)
-					if err != nil {
-						t.Fatal(err)
+					added := int64(2)
+					if v2 {
+						added = 0
 					}
-					output.Write(response.Payload)
-					text.WriteString(gjson.GetBytes(response.Payload, "choices.0.message.content").String())
-				}
-				if text.String() != "firstsecond" || strings.Contains(output.String(), "emit_complete_response_") || len(requests) != 2 {
-					t.Fatalf("calls=%d output=%s", len(requests), output.String())
-				}
-				prefix := ""
-				if protocol == "antigravity" {
-					prefix = "request."
-				}
-				for i, body := range requests {
-					if gjson.GetBytes(body, prefix+"generationConfig.temperature").Float() != 0.42 || gjson.GetBytes(body, prefix+"generationConfig.topP").Exists() {
-						t.Fatalf("payload rules lost on attempt %d: %s", i, body)
+					if gjson.GetBytes(requests[1], prefix+"contents.#").Int() != gjson.GetBytes(requests[0], prefix+"contents.#").Int()+added {
+						t.Fatalf("continuation history malformed: %s", requests[1])
 					}
-					if bytes.Count(body, []byte("final-marker")) != 1 {
-						t.Fatalf("payload rules applied more/less than once on attempt %d: %s", i, body)
+					name := gjson.GetBytes(requests[0], prefix+"tools.0.functionDeclarations.0.name").String()
+					if gjson.GetBytes(requests[1], prefix+"tools.0.functionDeclarations.0.name").String() != name || bytes.Count(requests[0], []byte(promptStart+name+"`")) != 1 {
+						t.Fatal("tool identity changed or prompt injected more than once")
 					}
-					if !bytes.Contains(body, []byte("emit_complete_response_")) {
-						t.Fatalf("tool missing: %s", body)
-					}
-				}
-				if gjson.GetBytes(requests[1], prefix+"contents.#").Int() != gjson.GetBytes(requests[0], prefix+"contents.#").Int()+2 {
-					t.Fatalf("continuation history malformed: %s", requests[1])
-				}
-				name := gjson.GetBytes(requests[0], prefix+"tools.0.functionDeclarations.0.name").String()
-				if gjson.GetBytes(requests[1], prefix+"tools.0.functionDeclarations.0.name").String() != name || bytes.Count(requests[0], []byte("Call the `"+name+"`")) != 1 {
-					t.Fatal("tool identity changed or prompt injected more than once")
-				}
-			})
+				})
+			}
 		}
 	}
 }

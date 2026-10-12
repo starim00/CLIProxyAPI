@@ -16,7 +16,7 @@ import (
 
 func (h *BaseAPIHandler) antiTruncationAvailable(model string) bool {
 	if h == nil || h.Cfg == nil || !h.Cfg.Streaming.AntiTruncation.Enabled ||
-		(h.AuthManager != nil && h.AuthManager.HomeEnabled()) || strings.HasPrefix(model, helps.AntiTruncationModelPrefix) {
+		(h.AuthManager != nil && h.AuthManager.HomeEnabled()) || strings.HasPrefix(model, helps.AntiTruncationModelPrefix) || strings.HasPrefix(model, helps.AntiTruncationV2ModelPrefix) {
 		return false
 	}
 	model = thinking.ParseSuffix(model).ModelName
@@ -30,6 +30,27 @@ func (h *BaseAPIHandler) antiTruncationAvailable(model string) bool {
 			canonical = info.MetadataModelID
 		}
 		if helps.AntiTruncationMatches(h.Cfg.Streaming.AntiTruncation, canonical) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *BaseAPIHandler) antiTruncationV2Available(model string) bool {
+	if !h.antiTruncationAvailable(model) || !helps.AntiTruncationV2TextModel(model) {
+		return false
+	}
+	model = thinking.ParseSuffix(model).ModelName
+	r := registry.GetGlobalRegistry()
+	for _, provider := range r.GetModelProviders(model) {
+		if provider != "gemini" && provider != "antigravity" {
+			continue
+		}
+		canonical := model
+		if info := r.GetModelInfo(model, provider); info != nil && info.MetadataModelID != "" {
+			canonical = info.MetadataModelID
+		}
+		if helps.AntiTruncationV2TextModel(canonical) && helps.AntiTruncationMatches(h.Cfg.Streaming.AntiTruncation, canonical) {
 			return true
 		}
 	}
@@ -52,27 +73,32 @@ func (h *BaseAPIHandler) WithAntiTruncationModels(models []map[string]any) []map
 	}
 	for _, m := range models {
 		id := modelID(m)
-		variantID := helps.AntiTruncationModelPrefix + id
-		if ids[variantID] || !h.antiTruncationAvailable(id) {
-			continue
-		}
-		variant := maps.Clone(m)
-		if _, ok := variant["id"]; ok {
-			variant["id"] = variantID
-		}
-		if name, ok := variant["name"].(string); ok {
-			variant["name"] = variantID
-			if strings.HasPrefix(name, "models/") {
-				variant["name"] = "models/" + variantID
+		for _, prefix := range []string{helps.AntiTruncationModelPrefix, helps.AntiTruncationV2ModelPrefix} {
+			if prefix == helps.AntiTruncationV2ModelPrefix && !h.antiTruncationV2Available(id) {
+				continue
 			}
-		}
-		for _, key := range []string{"displayName", "display_name"} {
-			if display, ok := variant[key].(string); ok {
-				variant[key] = helps.AntiTruncationModelPrefix + display
+			variantID := prefix + id
+			if ids[variantID] || !h.antiTruncationAvailable(id) {
+				continue
 			}
+			variant := maps.Clone(m)
+			if _, ok := variant["id"]; ok {
+				variant["id"] = variantID
+			}
+			if name, ok := variant["name"].(string); ok {
+				variant["name"] = variantID
+				if strings.HasPrefix(name, "models/") {
+					variant["name"] = "models/" + variantID
+				}
+			}
+			for _, key := range []string{"displayName", "display_name"} {
+				if display, ok := variant[key].(string); ok {
+					variant[key] = prefix + display
+				}
+			}
+			result = append(result, variant)
+			ids[variantID] = true
 		}
-		result = append(result, variant)
-		ids[variantID] = true
 	}
 	return result
 }
@@ -82,14 +108,21 @@ func antiTruncationRequestError() *interfaces.ErrorMessage {
 }
 
 func (h *BaseAPIHandler) resolveAntiTruncationModel(model string, body []byte, protocol string, image bool) (string, []byte, bool, *interfaces.ErrorMessage) {
-	if !strings.HasPrefix(model, helps.AntiTruncationModelPrefix) {
+	prefix := helps.AntiTruncationModelPrefix
+	if strings.HasPrefix(model, helps.AntiTruncationV2ModelPrefix) {
+		prefix = helps.AntiTruncationV2ModelPrefix
+	}
+	if !strings.HasPrefix(model, prefix) {
 		return model, body, false, nil
 	}
 	// Existing registered IDs take precedence over generated variants.
 	if len(registry.GetGlobalRegistry().GetModelProviders(model)) > 0 {
 		return model, body, false, nil
 	}
-	model = strings.TrimPrefix(model, helps.AntiTruncationModelPrefix)
+	model = strings.TrimPrefix(model, prefix)
+	if prefix == helps.AntiTruncationV2ModelPrefix && !h.antiTruncationV2Available(model) {
+		return "", nil, false, antiTruncationRequestError()
+	}
 	if image || protocol == "interactions" || !h.antiTruncationAvailable(model) {
 		return "", nil, false, antiTruncationRequestError()
 	}

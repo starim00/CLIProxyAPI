@@ -39,13 +39,17 @@ func antiTruncationDeclaration(name string) map[string]any {
 	}
 }
 
-func randomAntiTruncationTool(existing map[string]bool) (string, error) {
+func randomAntiTruncationTool(existing map[string]bool, prefixes ...string) (string, error) {
+	prefix := antiTruncationToolPrefix
+	if len(prefixes) > 0 {
+		prefix = prefixes[0]
+	}
 	for attempt := 0; attempt < 100; attempt++ {
 		var random [12]byte
 		if _, err := rand.Read(random[:]); err != nil {
 			return "", err
 		}
-		name := antiTruncationToolPrefix + hex.EncodeToString(random[:])
+		name := prefix + hex.EncodeToString(random[:])
 		if !existing[name] {
 			return name, nil
 		}
@@ -69,6 +73,9 @@ func PrepareAntiTruncationSource(req coreexecutor.Request, opts coreexecutor.Opt
 	enabled, _ := opts.Metadata[coreexecutor.AntiTruncationMetadataKey].(bool)
 	if !enabled || opts.SourceFormat != sdktranslator.FormatOpenAI || opts.Metadata[antiTruncationPreparationKey] != nil {
 		return req, opts, nil
+	}
+	if v2, _ := opts.Metadata[coreexecutor.AntiTruncationV2MetadataKey].(bool); v2 {
+		return prepareAntiTruncationV2Source(req, opts)
 	}
 	state := antiTruncationPreparation{}
 	bodies := [][]byte{req.Payload}
