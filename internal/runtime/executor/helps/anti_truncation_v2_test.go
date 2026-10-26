@@ -27,7 +27,7 @@ func TestAntiTruncationV2Injection(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := []byte(`{"messages":` + tc.messages + `,"tool_choice":` + tc.choice + `,"tools":[{"type":"function","function":{"name":"lookup"}}]}`)
-			opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, OriginalRequest: body, Metadata: map[string]any{coreexecutor.AntiTruncationMetadataKey: true, coreexecutor.AntiTruncationV2MetadataKey: true}}
+			opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, OriginalRequest: body, Metadata: map[string]any{coreexecutor.AntiTruncationMetadataKey: true}}
 			req, next, err := PrepareAntiTruncationSource(coreexecutor.Request{Payload: body}, opts)
 			if err != nil {
 				t.Fatal(err)

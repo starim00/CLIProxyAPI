@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
@@ -283,7 +282,6 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 }
 
 func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
-	antiV2 := strings.HasPrefix(modelName, helps.AntiTruncationV2ModelPrefix)
 	modelName, rawJSON, antiSelected, antiErr := h.resolveAntiTruncationModel(modelName, rawJSON, entryProtocol, allowImageModel)
 	antiFailure := func(err *interfaces.ErrorMessage) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
 		errs := make(chan *interfaces.ErrorMessage, 1)
@@ -328,7 +326,6 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.AntiTruncationMetadataKey] = antiSelected
-	reqMeta[coreexecutor.AntiTruncationV2MetadataKey] = antiSelected && antiV2
 	if execOptions.Path != "" {
 		reqMeta[coreexecutor.RequestPathMetadataKey] = execOptions.Path
 	}

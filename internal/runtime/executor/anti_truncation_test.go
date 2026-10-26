@@ -61,34 +61,25 @@ func TestAntiTruncationOrdinaryRequestUnchanged(t *testing.T) {
 // Exercise the production executors, their final payload rules and their
 // downstream translators; no provider credentials or public API calls are used.
 func TestAntiTruncationExecutors(t *testing.T) {
-	for _, v2 := range []bool{false, true} {
-		toolPrefix, promptStart := "emit_complete_response_", "Call the `"
-		if v2 {
-			toolPrefix, promptStart = "agw_emit_", "Always use tool `"
-		}
-		for _, provider := range []string{"gemini", "antigravity", "antigravity-adapter"} {
+	{
+		toolPrefix, promptStart := "agw_emit_", "Always use tool `"
+		for _, provider := range []string{"gemini", "antigravity", "antigravity-adapter", "vertex"} {
 			for _, stream := range []bool{false, true} {
-				t.Run(fmt.Sprintf("v2=%v/%s/stream=%v", v2, provider, stream), func(t *testing.T) {
+				t.Run(fmt.Sprintf("%s/stream=%v", provider, stream), func(t *testing.T) {
 					var requests [][]byte
 					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						body, _ := io.ReadAll(r.Body)
 						requests = append(requests, body)
-						text, finish := "first", "MAX_TOKENS"
-						if len(requests) == 2 {
-							text, finish = "second", "STOP"
-						}
-						if v2 {
-							text, finish = "firstsecond", "STOP"
-						}
+						text, finish := "firstsecond", "STOP"
 						toolPath := "tools.0.functionDeclarations.0.name"
-						if provider != "gemini" {
+						if strings.HasPrefix(provider, "antigravity") {
 							toolPath = "request." + toolPath
 						}
 						data := fmt.Sprintf(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":%q,"args":{"content":%q}}}]},"finishReason":%q}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3}}`, gjson.GetBytes(body, toolPath).String(), text, finish)
-						if v2 && len(requests) == 1 {
+						if len(requests) == 1 {
 							data = `{"candidates":[{"finishReason":"STOP"}]}`
 						}
-						if provider != "gemini" {
+						if strings.HasPrefix(provider, "antigravity") {
 							data = `{"response":` + data + `}`
 						}
 						if strings.Contains(r.URL.Path, "streamGenerateContent") {
@@ -105,6 +96,9 @@ func TestAntiTruncationExecutors(t *testing.T) {
 					if provider == "antigravity-adapter" {
 						protocol = "antigravity"
 					}
+					if provider == "vertex" {
+						protocol = "gemini"
+					}
 					cfg.Payload.Override = []config.PayloadRule{{Models: []config.PayloadModelRule{{Name: "gemini-*", Protocol: protocol, FromProtocol: "openai"}}, Params: map[string]any{"generationConfig.temperature": 0.42, "systemInstruction.parts.-1": map[string]string{"text": "final-marker"}}}}
 					cfg.Payload.Filter = []config.PayloadFilterRule{{Models: []config.PayloadModelRule{{Name: "gemini-*", Protocol: protocol}}, Params: []string{"generationConfig.topP"}}}
 					auth := &cliproxyauth.Auth{ID: "anti-test-" + provider, Provider: protocol, Attributes: map[string]string{"api_key": "mock-key", "base_url": server.URL}, Metadata: map[string]any{"access_token": "mock-token", "project_id": "mock-project", "expiry": time.Now().Add(time.Hour).Format(time.RFC3339)}}
@@ -114,11 +108,14 @@ func TestAntiTruncationExecutors(t *testing.T) {
 					}
 					req := cliproxyexecutor.Request{Model: model, Payload: []byte(`{"messages":[{"role":"user","content":"hello"}],"top_p":0.8}`)}
 					opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, Metadata: map[string]any{cliproxyexecutor.AntiTruncationMetadataKey: true}}
-					opts.Metadata[cliproxyexecutor.AntiTruncationV2MetadataKey] = v2
 					var execute func(context.Context, *cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error)
 					var executeStream func(context.Context, *cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error)
 					if provider == "gemini" {
 						e := NewGeminiExecutor(cfg)
+						execute = e.Execute
+						executeStream = e.ExecuteStream
+					} else if provider == "vertex" {
+						e := NewGeminiVertexExecutor(cfg)
 						execute = e.Execute
 						executeStream = e.ExecuteStream
 					} else {
@@ -169,10 +166,7 @@ func TestAntiTruncationExecutors(t *testing.T) {
 							t.Fatalf("tool missing: %s", body)
 						}
 					}
-					added := int64(2)
-					if v2 {
-						added = 0
-					}
+					added := int64(0)
 					if gjson.GetBytes(requests[1], prefix+"contents.#").Int() != gjson.GetBytes(requests[0], prefix+"contents.#").Int()+added {
 						t.Fatalf("continuation history malformed: %s", requests[1])
 					}

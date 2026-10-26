@@ -351,7 +351,7 @@ type ClaudeCodeConfig struct {
 
 // StreamingConfig holds server streaming behavior configuration.
 type StreamingConfig struct {
-	// AntiTruncation exposes opt-in prefixed models with synthetic-answer continuation or empty retries.
+	// AntiTruncation exposes opt-in prefixed models with a synthetic answer tool and empty retries.
 	AntiTruncation AntiTruncationConfig `yaml:"anti-truncation,omitempty" json:"anti-truncation,omitempty"`
 
 	// KeepAliveSeconds controls how often the server emits SSE heartbeats (": keep-alive\n\n")

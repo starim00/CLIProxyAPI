@@ -250,8 +250,8 @@ requests:
   #   keepalive-seconds: 15         # Default: 0 (disabled). <= 0 disables keep-alives.
   #   bootstrap-retries: 1          # Default: 0 (disabled). Retries before first byte is sent.
   #   send-keepalive-before-ft: false # Default: false. When true and keepalive-seconds > 0, send SSE heartbeats before the first token.
-  #   anti-truncation:        # Exposes 抗截断/<model ID> and 抗截断-v2/<model ID> variants.
-  #     enabled: false       # Opt-in synthetic answer tool plus bounded continuation.
+  #   anti-truncation:        # Exposes 抗截断/<model ID>, preserving credential prefixes.
+  #     enabled: false       # Opt-in gateway answer tool plus bounded empty retries.
   #     models: ["gemini-*"] # Matches resolved upstream model IDs, not client aliases.
   #     max-attempts: 3      # Includes initial request; hard limit 10.
 

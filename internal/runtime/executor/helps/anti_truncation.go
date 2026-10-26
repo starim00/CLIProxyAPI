@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"path"
 	"strings"
@@ -16,14 +15,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // AntiTruncationModelPrefix exposes opt-in variants without changing ordinary models.
 const AntiTruncationModelPrefix = "抗截断/"
-
-// AntiTruncationV2ModelPrefix selects the gateway-compatible transport strategy.
-const AntiTruncationV2ModelPrefix = "抗截断-v2/"
 
 // AntiTruncationMatches checks the configured upstream model allowlist.
 func AntiTruncationMatches(c config.AntiTruncationConfig, model string) bool {
@@ -51,24 +46,16 @@ func PrepareAntiTruncationForRequest(cfg *config.Config, model string, body []by
 		return nil, nil, errors.New("anti-truncation: resolved upstream model is not enabled")
 	}
 	state, _ := opts.Metadata[antiTruncationPreparationKey].(antiTruncationPreparation)
-	if v2, _ := opts.Metadata[coreexecutor.AntiTruncationV2MetadataKey].(bool); v2 {
-		return prepareAntiTruncationV2(cfg, model, body, root, stream, state.toolName)
-	}
-	if state.bypass {
-		return body, nil, nil
-	}
-	return prepareAntiTruncation(cfg, model, body, root, stream, state.toolName)
+	return prepareAntiTruncationV2(cfg, model, body, root, stream, state.toolName)
 }
 
 const antiTruncationLimit = 16 << 20
 
-// AntiTruncation retains an unconfigured request so every continuation passes
+// AntiTruncation retains an unconfigured request so every empty retry passes
 // through the executor's normal payload finalizer exactly once.
 type AntiTruncation struct {
-	v2       bool
 	toolName string
 	base     []byte
-	root     string
 	stream   bool
 	attempts int
 }
@@ -76,7 +63,7 @@ type AntiTruncation struct {
 // PrepareAntiTruncation runs after translation and before user payload rules.
 // Disabled and unmatched requests are returned byte-for-byte unchanged.
 func PrepareAntiTruncation(cfg *config.Config, model string, body []byte, root string, stream bool) ([]byte, *AntiTruncation, error) {
-	return prepareAntiTruncation(cfg, model, body, root, stream, "")
+	return prepareAntiTruncationV2(cfg, model, body, root, stream, "")
 }
 
 func prepareAntiTruncation(cfg *config.Config, model string, body []byte, root string, stream bool, toolName string) ([]byte, *AntiTruncation, error) {
@@ -106,41 +93,8 @@ func prepareAntiTruncation(cfg *config.Config, model string, body []byte, root s
 		}
 	}
 	out := body
-	if toolName != "" {
-		if !existing[toolName] {
-			return nil, nil, errors.New("anti-truncation: translated request lost the injected tool")
-		}
-	} else {
-		// Native Gemini has no inline system messages. Keep its protocol's
-		// systemInstruction representation while respecting explicit tool control.
-		modePath := prefix + "toolConfig.functionCallingConfig.mode"
-		mode := gjson.GetBytes(body, modePath).String()
-		if mode == "NONE" || mode == "ANY" || gjson.GetBytes(body, prefix+"toolConfig.functionCallingConfig.allowedFunctionNames").Exists() {
-			return body, nil, nil
-		}
-		var err error
-		toolName, err = randomAntiTruncationTool(existing)
-		if err != nil {
-			return nil, nil, err
-		}
-		out, err = sjson.SetBytes(out, prefix+"tools.-1", map[string]any{"functionDeclarations": []any{antiTruncationDeclaration(toolName)}})
-		if err != nil {
-			return nil, nil, err
-		}
-		contents := gjson.GetBytes(out, prefix+"contents").Array()
-		promptPath := prefix + "systemInstruction.parts.-1"
-		if len(contents) > 0 && contents[len(contents)-1].Get("role").String() == "model" {
-			out, err = sjson.SetBytes(out, prefix+"contents.-1", map[string]any{"role": "user", "parts": []any{map[string]string{"text": antiTruncationInstruction(toolName)}}})
-		} else {
-			out, err = sjson.SetBytes(out, promptPath, map[string]string{"text": antiTruncationInstruction(toolName)})
-		}
-		if err != nil {
-			return nil, nil, err
-		}
-		out, err = sjson.SetBytes(out, modePath, "AUTO")
-		if err != nil {
-			return nil, nil, err
-		}
+	if toolName == "" || !existing[toolName] {
+		return nil, nil, errors.New("anti-truncation: translated request lost the injected tool")
 	}
 	attempts := c.MaxAttempts
 	if attempts <= 0 {
@@ -149,7 +103,7 @@ func prepareAntiTruncation(cfg *config.Config, model string, body []byte, root s
 	if attempts > 10 {
 		attempts = 10
 	}
-	return out, &AntiTruncation{toolName: toolName, base: bytes.Clone(out), root: root, stream: stream, attempts: attempts}, nil
+	return out, &AntiTruncation{toolName: toolName, base: bytes.Clone(out), stream: stream, attempts: attempts}, nil
 }
 
 type antiTruncationBody struct {
@@ -158,7 +112,7 @@ type antiTruncationBody struct {
 }
 
 // RebuildAntiTruncationRequest preserves transport headers while replacing the
-// body with an already-finalized continuation. It does not mutate the template.
+// body with an already-finalized retry. It does not mutate the template.
 func RebuildAntiTruncationRequest(template *http.Request, body []byte) *http.Request {
 	next := template.Clone(template.Context())
 	next.Body = io.NopCloser(bytes.NewReader(body))
@@ -173,8 +127,8 @@ func (b *antiTruncationBody) Close() error {
 }
 
 // Do preserves the initial HTTP status. Successful responses are decoded before
-// protocol translation; a missing terminator or MAX_TOKENS can trigger bounded
-// continuation. Explicit terminal refusals and real tool calls never trigger it.
+// protocol translation. Empty replies can trigger bounded retries, while
+// explicit terminal refusals and real tool calls never trigger them.
 func (a *AntiTruncation) Do(client *http.Client, request *http.Request, rebuild func([]byte) (*http.Request, error)) (*http.Response, error) {
 	if a == nil {
 		return client.Do(request)
@@ -198,7 +152,7 @@ func (a *AntiTruncation) Do(client *http.Client, request *http.Request, rebuild 
 	response.Header.Del("Content-Length")
 	go func() {
 		defer cancel()
-		errRun := a.run(ctx, client, upstream, rebuild, writer)
+		errRun := a.runV2(ctx, client, upstream, rebuild, writer)
 		_ = writer.CloseWithError(errRun)
 	}()
 	return response, nil
@@ -214,7 +168,6 @@ func (b *antiTruncationHTTPBody) Close() error { defer b.cancel(); return b.Read
 // antiAnswer is one attempt, buffered to avoid duplicating ordinary text when
 // the same answer is also returned via the synthetic tool.
 type antiAnswer struct {
-	v2        bool
 	toolName  string
 	template  map[string]any
 	envelope  map[string]any
@@ -276,7 +229,7 @@ func (r *antiAnswer) observe(data []byte) error {
 			}
 			if call, ok := part["functionCall"].(map[string]any); ok {
 				if r.toolName != "" && call["name"] == r.toolName {
-					if raw, ok := call["args"].(string); ok && r.v2 {
+					if raw, ok := call["args"].(string); ok {
 						text, err := repairAntiTruncationV2Arguments(raw)
 						if err != nil {
 							return err
@@ -337,7 +290,7 @@ func readAntiAnswerObserved(body io.Reader, stream bool, result antiAnswer, onEv
 		if err != nil {
 			return result, err
 		}
-		if result.v2 && len(bytes.TrimSpace(data)) == 0 {
+		if len(bytes.TrimSpace(data)) == 0 {
 			return result, nil
 		}
 		err = result.observe(data)
@@ -386,119 +339,6 @@ func readAntiAnswerObserved(body io.Reader, stream bool, result antiAnswer, onEv
 		return result, err
 	}
 	return result, nil
-}
-
-func (a *AntiTruncation) continuation(text string) ([]byte, error) {
-	prefix := ""
-	if a.root != "" {
-		prefix = a.root + "."
-	}
-	body := bytes.Clone(a.base)
-	if text != "" {
-		var err error
-		body, err = sjson.SetBytes(body, prefix+"contents.-1", map[string]any{"role": "model", "parts": []any{map[string]string{"text": text}}})
-		if err != nil {
-			return nil, err
-		}
-	}
-	instruction := "Your previous reply was truncated. Continue only the remaining reply without repeating previous content or adding an introduction. " + antiTruncationInstruction(a.toolName)
-	return sjson.SetBytes(body, prefix+"contents.-1", map[string]any{"role": "user", "parts": []any{map[string]string{"text": instruction}}})
-}
-
-func (a *AntiTruncation) run(ctx context.Context, client *http.Client, body io.ReadCloser, rebuild func([]byte) (*http.Request, error), output io.Writer) error {
-	if a.v2 {
-		return a.runV2(ctx, client, body, rebuild, output)
-	}
-	defer func() { _ = body.Close() }()
-	var history strings.Builder
-	var allParts []any
-	usage := map[string]any{}
-	totalSize := 0
-	for attempt := 1; attempt <= a.attempts; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		answer, readErr := readAntiAnswer(body, a.stream, a.toolName)
-		_ = body.Close()
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		totalSize += answer.size
-		if totalSize > antiTruncationLimit {
-			return errors.New("anti-truncation: total response exceeds 16 MiB buffer limit")
-		}
-		parts, text := answer.cleanParts()
-		history.WriteString(text)
-		for key, value := range answer.usage {
-			if n, ok := value.(float64); ok {
-				prev, _ := usage[key].(float64)
-				usage[key] = prev + n
-			}
-		}
-		// Only transport truncation, missing terminal markers and token limits are
-		// continuable. Malformed JSON/error events must remain explicit failures.
-		var networkErr net.Error
-		if readErr != nil && !errors.Is(readErr, io.ErrUnexpectedEOF) && !errors.As(readErr, &networkErr) {
-			return readErr
-		}
-		if answer.realTools && readErr != nil {
-			return readErr
-		}
-		complete := answer.blocked || answer.realTools || (answer.finish != "" && answer.finish != "MAX_TOKENS") || (answer.synthetic && answer.finish == "" && readErr == nil)
-		if complete && readErr != nil && !answer.realTools {
-			complete = false
-		}
-		if complete && answer.finish == "" && !answer.blocked {
-			answer.finish = "STOP"
-		}
-		if !complete && attempt == a.attempts {
-			if a.stream && len(parts) > 0 {
-				if err := writeAntiAnswer(output, answer, parts, "", nil, true); err != nil {
-					return err
-				}
-			}
-			return fmt.Errorf("anti-truncation: answer incomplete after %d attempts", a.attempts)
-		}
-		if a.stream {
-			finish := ""
-			var finalUsage map[string]any
-			if complete {
-				finish = answer.finish
-				if finish == "" && answer.realTools {
-					finish = "STOP"
-				}
-				finalUsage = usage
-			}
-			if err := writeAntiAnswer(output, answer, parts, finish, finalUsage, true); err != nil {
-				return err
-			}
-		} else {
-			allParts = append(allParts, parts...)
-		}
-		if complete {
-			if !a.stream {
-				return writeAntiAnswer(output, answer, allParts, answer.finish, usage, false)
-			}
-			return nil
-		}
-		payload, err := a.continuation(history.String())
-		if err != nil {
-			return err
-		}
-		next, err := rebuild(payload)
-		if err != nil {
-			return err
-		}
-		response, err := client.Do(next.Clone(ctx))
-		if err != nil {
-			return err
-		}
-		body = response.Body
-		if response.StatusCode < 200 || response.StatusCode >= 300 {
-			return fmt.Errorf("anti-truncation: continuation returned HTTP %d", response.StatusCode)
-		}
-	}
-	return errors.New("anti-truncation: exhausted attempts")
 }
 
 func writeAntiAnswer(w io.Writer, answer antiAnswer, parts []any, finish string, usage map[string]any, stream bool) error {

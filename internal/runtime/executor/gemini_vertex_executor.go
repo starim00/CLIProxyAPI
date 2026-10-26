@@ -237,11 +237,18 @@ func (e *GeminiVertexExecutor) HttpRequest(ctx context.Context, auth *cliproxyau
 
 // Execute performs a non-streaming request to the Vertex AI API.
 func (e *GeminiVertexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	req, opts, err = helps.PrepareAntiTruncationSource(req, opts)
+	if err != nil {
+		return resp, err
+	}
 	ctx = helps.EnsureSessionContext(ctx, opts, req.Payload)
 	if opts.Alt == "responses/compact" {
 		return resp, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
 	if helps.ShouldExecuteVertexOpenAPIForRequest(e.cfg, auth, req.Model, opts) {
+		if selected, _ := opts.Metadata[cliproxyexecutor.AntiTruncationMetadataKey].(bool); selected {
+			return resp, statusErr{code: 400, msg: "anti-truncation requires native Vertex Gemini generation"}
+		}
 		return e.executeOpenAPI(ctx, auth, req, opts)
 	}
 	if shouldExecuteVertexInteractions(auth, opts) {
@@ -265,11 +272,18 @@ func (e *GeminiVertexExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 
 // ExecuteStream performs a streaming request to the Vertex AI API.
 func (e *GeminiVertexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	req, opts, err := helps.PrepareAntiTruncationSource(req, opts)
+	if err != nil {
+		return nil, err
+	}
 	ctx = helps.EnsureSessionContext(ctx, opts, req.Payload)
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
 	if helps.ShouldExecuteVertexOpenAPIForRequest(e.cfg, auth, req.Model, opts) {
+		if selected, _ := opts.Metadata[cliproxyexecutor.AntiTruncationMetadataKey].(bool); selected {
+			return nil, statusErr{code: 400, msg: "anti-truncation requires native Vertex Gemini generation"}
+		}
 		return e.executeOpenAPIStream(ctx, auth, req, opts)
 	}
 	if shouldExecuteVertexInteractions(auth, opts) {
@@ -476,6 +490,10 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
 	}
 	body, _ = sjson.DeleteBytes(body, "session_id")
 
+	body, anti, err := helps.PrepareAntiTruncationForRequest(e.cfg, baseModel, body, "", false, opts)
+	if err != nil {
+		return resp, err
+	}
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, "gemini", opts.SourceFormat.String(), "", body, originalTranslated, helps.PayloadRequestedModel(opts, req.Model), helps.PayloadRequestPath(opts), opts.Headers)
 	reporter.SetTranslatedReasoningEffort(body, "gemini")
 	httpReq, errNewReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -516,7 +534,10 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, errDo := httpClient.Do(httpReq)
+	httpResp, errDo := anti.Do(httpClient, httpReq, func(next []byte) (*http.Request, error) {
+		next = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, "gemini", opts.SourceFormat.String(), "", next, originalTranslated, helps.PayloadRequestedModel(opts, req.Model), helps.PayloadRequestPath(opts), opts.Headers)
+		return helps.RebuildAntiTruncationRequest(httpReq, next), nil
+	})
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 		return resp, errDo
@@ -625,6 +646,10 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
 	}
 	body, _ = sjson.DeleteBytes(body, "session_id")
 
+	body, anti, err := helps.PrepareAntiTruncationForRequest(e.cfg, baseModel, body, "", false, opts)
+	if err != nil {
+		return resp, err
+	}
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 	httpReq, errNewReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -662,7 +687,10 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, errDo := httpClient.Do(httpReq)
+	httpResp, errDo := anti.Do(httpClient, httpReq, func(next []byte) (*http.Request, error) {
+		next = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", next, originalTranslated, requestedModel, requestPath, opts.Headers)
+		return helps.RebuildAntiTruncationRequest(httpReq, next), nil
+	})
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 		return resp, errDo
@@ -754,6 +782,10 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 	}
 	body, _ = sjson.DeleteBytes(body, "session_id")
 
+	body, anti, err := helps.PrepareAntiTruncationForRequest(e.cfg, baseModel, body, "", true, opts)
+	if err != nil {
+		return nil, err
+	}
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 	httpReq, errNewReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -794,7 +826,10 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, errDo := httpClient.Do(httpReq)
+	httpResp, errDo := anti.Do(httpClient, httpReq, func(next []byte) (*http.Request, error) {
+		next = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", next, originalTranslated, requestedModel, requestPath, opts.Headers)
+		return helps.RebuildAntiTruncationRequest(httpReq, next), nil
+	})
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 		return nil, errDo
@@ -965,6 +1000,10 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 	}
 	body, _ = sjson.DeleteBytes(body, "session_id")
 
+	body, anti, err := helps.PrepareAntiTruncationForRequest(e.cfg, baseModel, body, "", true, opts)
+	if err != nil {
+		return nil, err
+	}
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 	httpReq, errNewReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -1002,7 +1041,10 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, errDo := httpClient.Do(httpReq)
+	httpResp, errDo := anti.Do(httpClient, httpReq, func(next []byte) (*http.Request, error) {
+		next = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", next, originalTranslated, requestedModel, requestPath, opts.Headers)
+		return helps.RebuildAntiTruncationRequest(httpReq, next), nil
+	})
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 		return nil, errDo

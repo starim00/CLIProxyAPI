@@ -13,7 +13,7 @@ import (
 // string deltas. Flush each own-tool content event immediately, holding ordinary
 // text until EOF so it can never be concatenated with a later synthetic answer.
 func readAntiAnswerV2(body io.Reader, stream bool, name string, output io.Writer) (antiAnswer, error) {
-	return readAntiAnswerObserved(body, stream, antiAnswer{toolName: name, v2: true}, func(answer *antiAnswer, start int) error {
+	return readAntiAnswerObserved(body, stream, antiAnswer{toolName: name}, func(answer *antiAnswer, start int) error {
 		var parts []any
 		for _, part := range answer.parts[start:] {
 			m := part.(map[string]any)

@@ -129,6 +129,9 @@ func injectAntiTruncationV2Messages(body []byte, name string) ([]byte, error) {
 }
 
 func prepareAntiTruncationV2(cfg *config.Config, model string, body []byte, root string, stream bool, name string) ([]byte, *AntiTruncation, error) {
+	if cfg == nil || !AntiTruncationMatches(cfg.Streaming.AntiTruncation, model) {
+		return body, nil, nil
+	}
 	if !AntiTruncationV2TextModel(model) {
 		return nil, nil, errors.New("anti-truncation-v2: non-text model is unsupported")
 	}
@@ -172,9 +175,6 @@ func prepareAntiTruncationV2(cfg *config.Config, model string, body []byte, root
 		}
 	}
 	out, a, err := prepareAntiTruncation(cfg, model, body, root, stream, name)
-	if a != nil {
-		a.v2 = true
-	}
 	return out, a, err
 }
 
