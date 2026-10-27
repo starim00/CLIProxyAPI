@@ -90,7 +90,7 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 	var models []*ModelInfo
 	switch provider {
 	case constant.Gemini:
-		models = registry.GetGeminiModels()
+		models = registry.WithGoogleEmbeddingModels(registry.GetGeminiModels())
 		if entry := resolveConfigGeminiKeyForConfig(cfg, a); entry != nil {
 			if len(entry.Models) > 0 {
 				models = buildGeminiConfigModels(entry)
@@ -113,7 +113,7 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 		models = applyExcludedModels(models, excluded)
 	case "vertex":
 		// Vertex AI Gemini supports the same model identifiers as Gemini.
-		models = registry.GetGeminiVertexModels()
+		models = registry.WithGoogleEmbeddingModels(registry.GetGeminiVertexModels())
 		if entry := resolveConfigVertexCompatKeyForConfig(cfg, a); entry != nil {
 			if len(entry.Models) > 0 {
 				models = buildVertexCompatConfigModels(entry)

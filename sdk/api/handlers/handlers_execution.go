@@ -45,6 +45,9 @@ func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType
 }
 
 func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) ([]byte, http.Header, *interfaces.ErrorMessage) {
+	if alt == "embeddings" && (strings.HasPrefix(modelName, helps.AntiTruncationModelPrefix) || strings.HasPrefix(modelName, "抗截断-v2/")) {
+		return nil, nil, antiTruncationRequestError()
+	}
 	modelName, rawJSON, antiSelected, antiErr := h.resolveAntiTruncationModel(modelName, rawJSON, entryProtocol, allowImageModel)
 	if antiErr != nil {
 		return nil, nil, antiErr
@@ -58,6 +61,9 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		return nil, nil, errMsg
 	}
 	if routeDecision.ExecutorPluginID != "" {
+		if alt == "embeddings" {
+			return nil, nil, &interfaces.ErrorMessage{StatusCode: 400, Error: fmt.Errorf("embeddings require a Gemini or Vertex credential")}
+		}
 		if antiSelected {
 			return nil, nil, antiTruncationRequestError()
 		}
@@ -68,6 +74,18 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		return nil, nil, errMsg
 	}
 	providers = adjustExecutionProvidersForEntryProtocol(entryProtocol, providers)
+	if alt == "embeddings" {
+		filtered := make([]string, 0, len(providers))
+		for _, provider := range providers {
+			if provider == "gemini" || provider == "vertex" {
+				filtered = append(filtered, provider)
+			}
+		}
+		if len(filtered) == 0 {
+			return nil, nil, &interfaces.ErrorMessage{StatusCode: 400, Error: fmt.Errorf("embeddings require a Gemini or Vertex credential")}
+		}
+		providers = filtered
+	}
 	providers, antiErr = antiTruncationProviders(providers, antiSelected)
 	if antiErr != nil {
 		return nil, nil, antiErr

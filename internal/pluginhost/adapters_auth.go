@@ -71,7 +71,7 @@ func handlerDecodesBody(r *http.Request) bool {
 		return false
 	}
 	switch r.URL.Path {
-	case "/v1/chat/completions", "/v1/completions", "/v1/responses", "/v1/responses/compact",
+	case "/v1/chat/completions", "/v1/completions", "/v1/embeddings", "/v1/responses", "/v1/responses/compact",
 		"/backend-api/codex/responses", "/backend-api/codex/responses/compact",
 		"/v1/images/generations", "/v1/audio/speech", "/v1/tts",
 		"/v1/videos", "/v1/videos/generations", "/v1/videos/edits", "/v1/videos/extensions":

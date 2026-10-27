@@ -125,6 +125,9 @@ func (e *GeminiExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Aut
 //   - cliproxyexecutor.Response: The response from the API
 //   - error: An error if the request fails
 func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	if opts.Alt == "embeddings" {
+		return e.executeEmbeddings(ctx, auth, req, opts)
+	}
 	req, opts, err = helps.PrepareAntiTruncationSource(req, opts)
 	if err != nil {
 		return resp, err

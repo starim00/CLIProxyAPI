@@ -237,6 +237,9 @@ func (e *GeminiVertexExecutor) HttpRequest(ctx context.Context, auth *cliproxyau
 
 // Execute performs a non-streaming request to the Vertex AI API.
 func (e *GeminiVertexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	if opts.Alt == "embeddings" {
+		return e.executeEmbeddings(ctx, auth, req, opts)
+	}
 	req, opts, err = helps.PrepareAntiTruncationSource(req, opts)
 	if err != nil {
 		return resp, err
