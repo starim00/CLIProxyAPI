@@ -77,12 +77,18 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	if alt == "embeddings" {
 		filtered := make([]string, 0, len(providers))
 		for _, provider := range providers {
-			if provider == "gemini" || provider == "vertex" {
+			supported := provider == "gemini" || provider == "vertex"
+			if executor, ok := h.AuthManager.Executor(provider); ok {
+				if capability, ok := executor.(interface{ SupportsEmbeddings() bool }); ok {
+					supported = capability.SupportsEmbeddings()
+				}
+			}
+			if supported {
 				filtered = append(filtered, provider)
 			}
 		}
 		if len(filtered) == 0 {
-			return nil, nil, &interfaces.ErrorMessage{StatusCode: 400, Error: fmt.Errorf("embeddings require a Gemini or Vertex credential")}
+			return nil, nil, &interfaces.ErrorMessage{StatusCode: 400, Error: fmt.Errorf("embeddings require an OpenAI-compatible, Gemini or Vertex credential")}
 		}
 		providers = filtered
 	}

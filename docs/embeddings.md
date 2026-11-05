@@ -1,7 +1,7 @@
 # Text embeddings
 
 `POST /v1/embeddings` accepts an OpenAI-compatible text embedding request and
-routes it through Gemini API-key or Vertex API-key/service-account credentials.
+routes it through OpenAI-compatible, Gemini API-key or Vertex API-key/service-account credentials.
 Existing credential prefixes, model aliases, exclusions and
 `routing.force-model-prefix` apply. Antigravity and anti-truncation models are
 not embedding providers.
@@ -15,16 +15,31 @@ not embedding providers.
 }
 ```
 
-The response contains `object: "list"`, the requested model name, ordered
+The response contains `object: "list"`, a model name, ordered
 `data` entries with `object`, `index`, and `embedding`, and `usage` with
 `prompt_tokens` and `total_tokens`. `encoding_format` may be `float` (default)
 or `base64` (little-endian float32 bytes). `dimensions` is optional and must
 be a positive integer supported by the upstream model. `task_type` and
 `title` are optional Google extensions.
 
-Input must be one non-empty string or an array of 1–2048 non-empty strings.
-OpenAI token-ID arrays and multimodal inputs are not supported. Token IDs
-cannot be interpreted safely with Google's different tokenizer.
+Input may be one non-empty string or an array of 1–2048 non-empty strings.
+Native OpenAI-compatible providers additionally accept integer token-ID arrays
+and arrays of token-ID arrays. Google credentials reject token-ID inputs because
+their tokenizers differ. Multimodal inputs are not supported.
+
+OpenAI-compatible providers forward the entire batch to their configured base
+URL plus /embeddings. Input, dimensions, encoding_format, user and other request
+fields are preserved. Responses retain upstream vectors and usage without
+conversion. HTTP error statuses and retry hints remain available to the existing
+credential scheduler.
+
+Official OpenAI API keys configured in the Codex API-key group are supported.
+When the base URL host is api.openai.com and no model allowlist is configured,
+the catalog also includes text-embedding-3-small, text-embedding-3-large and
+text-embedding-ada-002. Explicit model allowlists still take precedence.
+ChatGPT/Codex OAuth credentials are excluded from embedding credential selection.
+For other OpenAI-compatible providers, configure the upstream embedding models
+and any desired aliases in that provider's model list.
 
 The default Gemini and Vertex catalogs include `gemini-embedding-001` and
 `gemini-embedding-2`. Explicit credential model allowlists remain authoritative;
@@ -32,7 +47,7 @@ add the embedding models there when using an allowlist. Model visibility is
 not proof of upstream access: project permissions, billing, quotas and model
 region availability still apply.
 
-Each text is sent separately, in order, with the same selected credential.
+For Google providers, each text is sent separately, in order, with the same selected credential.
 Gemini uses `embedContent`; Vertex's earlier text embedding models use
 `predict`, while `gemini-embedding-2` uses `embedContent`. Input truncation is
 disabled. User payload rules apply once to each translated request, last.

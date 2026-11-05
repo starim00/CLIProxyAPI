@@ -18,6 +18,12 @@ import (
 )
 
 func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	if opts.Alt == "embeddings" {
+		if auth == nil || strings.TrimSpace(auth.Attributes["api_key"]) == "" || strings.TrimSpace(auth.Attributes["base_url"]) == "" {
+			return resp, statusErr{code: 400, msg: "embeddings require an API key and explicit OpenAI-compatible base URL; Codex OAuth is not supported"}
+		}
+		return NewOpenAICompatExecutor(e.Identifier(), e.cfg).executeEmbeddings(ctx, auth, req, opts)
+	}
 	ctx = helps.EnsureSessionContext(ctx, opts, req.Payload)
 	ctx = helps.WithCodexCommentaryPolicy(ctx, e.cfg)
 	if errExpand := helps.ExpandRecognizedResponsesCompactionCapsules(&req, &opts); errExpand != nil {

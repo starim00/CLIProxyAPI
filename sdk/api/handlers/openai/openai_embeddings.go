@@ -9,14 +9,14 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 )
 
-// Embeddings serves the OpenAI text embeddings contract through Google credentials.
+// Embeddings serves native OpenAI-compatible and translated Google embeddings.
 func (h *OpenAIAPIHandler) Embeddings(c *gin.Context) {
 	body, err := handlers.ReadRequestBody(c)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: err.Error(), Type: "invalid_request_error"}})
 		return
 	}
-	input, err := helps.ParseEmbeddingRequest(body)
+	input, err := helps.ParseOpenAIEmbeddingRequest(body)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: err.Error(), Type: "invalid_request_error"}})
 		return

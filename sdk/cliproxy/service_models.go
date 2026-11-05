@@ -2,6 +2,7 @@ package cliproxy
 
 import (
 	"context"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -1111,6 +1112,11 @@ func buildCodexConfigModels(entry *config.CodexKey) []*ModelInfo {
 	}
 	if len(entry.Models) == 0 {
 		models := registry.GetCodexProModels()
+		if endpoint, err := url.Parse(entry.BaseURL); err == nil && strings.EqualFold(endpoint.Hostname(), "api.openai.com") {
+			for _, id := range []string{"text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"} {
+				models = append(models, &ModelInfo{ID: id, Object: "model", OwnedBy: "openai", Type: "openai", DisplayName: id})
+			}
+		}
 		for _, model := range models {
 			if model != nil {
 				model.SupportConfigurationUpdate = false

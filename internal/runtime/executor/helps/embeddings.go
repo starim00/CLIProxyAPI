@@ -21,6 +21,15 @@ type EmbeddingRequest struct {
 }
 
 func ParseEmbeddingRequest(body []byte) (EmbeddingRequest, error) {
+	return parseEmbeddingRequest(body, false)
+}
+
+// ParseOpenAIEmbeddingRequest also accepts token IDs for native OpenAI providers.
+func ParseOpenAIEmbeddingRequest(body []byte) (EmbeddingRequest, error) {
+	return parseEmbeddingRequest(body, true)
+}
+
+func parseEmbeddingRequest(body []byte, allowTokens bool) (EmbeddingRequest, error) {
 	var r EmbeddingRequest
 	if err := json.Unmarshal(body, &r); err != nil {
 		return r, fmt.Errorf("invalid embeddings JSON: %w", err)
@@ -29,12 +38,17 @@ func ParseEmbeddingRequest(body []byte) (EmbeddingRequest, error) {
 		return r, fmt.Errorf("model must be a non-empty string")
 	}
 	var text string
+	tokenInput := false
 	if json.Unmarshal(r.Input, &text) == nil && string(r.Input) != "null" {
 		r.Texts = []string{text}
 	} else if err := json.Unmarshal(r.Input, &r.Texts); err != nil {
-		return r, fmt.Errorf("input must be text or an array of strings; token ID inputs are not supported by Google embeddings")
+		if !allowTokens || !validEmbeddingTokenInput(r.Input) {
+			return r, fmt.Errorf("invalid embedding input: expected non-empty text, text arrays, or supported integer token arrays")
+		}
+		tokenInput = true
+		r.Texts = nil
 	}
-	if len(r.Texts) == 0 || len(r.Texts) > 2048 {
+	if !tokenInput && (len(r.Texts) == 0 || len(r.Texts) > 2048) {
 		return r, fmt.Errorf("input must contain between 1 and 2048 texts")
 	}
 	for _, text := range r.Texts {
@@ -52,6 +66,38 @@ func ParseEmbeddingRequest(body []byte) (EmbeddingRequest, error) {
 		return r, fmt.Errorf("encoding_format must be float or base64")
 	}
 	return r, nil
+}
+
+func validEmbeddingTokenInput(raw []byte) bool {
+	valid := func(tokens []int) bool {
+		if len(tokens) == 0 {
+			return false
+		}
+		for _, token := range tokens {
+			if token < 0 {
+				return false
+			}
+		}
+		return true
+	}
+	// Null is not a token ID even though encoding/json accepts it into an int.
+	if strings.Contains(string(raw), "null") {
+		return false
+	}
+	var tokens []int
+	if json.Unmarshal(raw, &tokens) == nil {
+		return valid(tokens)
+	}
+	var batch [][]int
+	if json.Unmarshal(raw, &batch) != nil || len(batch) == 0 || len(batch) > 2048 {
+		return false
+	}
+	for _, tokens := range batch {
+		if !valid(tokens) {
+			return false
+		}
+	}
+	return true
 }
 
 // EmbeddingPayload creates one request per input to honor Vertex predict limits.

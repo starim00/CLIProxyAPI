@@ -61,6 +61,9 @@ func NewOpenAICompatExecutor(provider string, cfg *config.Config) *OpenAICompatE
 // Identifier implements cliproxyauth.ProviderExecutor.
 func (e *OpenAICompatExecutor) Identifier() string { return e.provider }
 
+// SupportsEmbeddings identifies native embedding providers independently of their configured names.
+func (e *OpenAICompatExecutor) SupportsEmbeddings() bool { return true }
+
 // UsesConfig reports whether the executor is bound to the provided config snapshot.
 func (e *OpenAICompatExecutor) UsesConfig(cfg *config.Config) bool {
 	return e != nil && e.cfg == cfg
@@ -101,6 +104,9 @@ func (e *OpenAICompatExecutor) HttpRequest(ctx context.Context, auth *cliproxyau
 }
 
 func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	if opts.Alt == "embeddings" {
+		return e.executeEmbeddings(ctx, auth, req, opts)
+	}
 	ctx = helps.EnsureSessionContext(ctx, opts, req.Payload)
 	if endpointPath := openAICompatImageEndpointPath(opts); endpointPath != "" {
 		return e.executeImages(ctx, auth, req, opts, endpointPath)

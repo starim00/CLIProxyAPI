@@ -84,6 +84,7 @@ type requiredAuthKindContextKey struct{}
 type credentialPolicyContextKey struct{}
 
 type authSelectionEligibility struct {
+	embeddingsOnly   bool
 	requiredKind     string
 	credentialPolicy string
 	disallowFreeAuth bool
@@ -106,7 +107,7 @@ func credentialPolicyFromContext(ctx context.Context) string {
 }
 
 func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecutor.Options) authSelectionEligibility {
-	eligibility := authSelectionEligibility{disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata)}
+	eligibility := authSelectionEligibility{disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata), embeddingsOnly: opts.Alt == "embeddings"}
 	if ctx != nil {
 		eligibility.requiredKind, _ = ctx.Value(requiredAuthKindContextKey{}).(string)
 		eligibility.credentialPolicy, _ = ctx.Value(credentialPolicyContextKey{}).(string)
@@ -116,6 +117,10 @@ func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecut
 
 func (e authSelectionEligibility) allows(auth *Auth) bool {
 	if auth == nil {
+		return false
+	}
+	if e.embeddingsOnly && auth.Provider == "codex" &&
+		(strings.TrimSpace(auth.Attributes["api_key"]) == "" || strings.TrimSpace(auth.Attributes["base_url"]) == "") {
 		return false
 	}
 	if e.requiredKind != "" && auth.AuthKind() != e.requiredKind {

@@ -24,6 +24,23 @@ func TestEmbeddingValidation(t *testing.T) {
 	}
 }
 
+func TestOpenAIEmbeddingTokenInputs(t *testing.T) {
+	for _, input := range []string{`[1,2]`, `[[1],[2,3]]`} {
+		body := []byte(`{"model":"m","input":` + input + `}`)
+		if _, err := ParseOpenAIEmbeddingRequest(body); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ParseEmbeddingRequest(body); err == nil {
+			t.Fatal("Google accepted token IDs")
+		}
+	}
+	for _, input := range []string{`[null]`, `[1,null]`, `[[1],null]`, `[[]]`, `[-1]`, `[1.5]`, `["text",1]`} {
+		if _, err := ParseOpenAIEmbeddingRequest([]byte(`{"model":"m","input":` + input + `}`)); err == nil {
+			t.Errorf("accepted %s", input)
+		}
+	}
+}
+
 func TestEmbeddingUpstreamValidation(t *testing.T) {
 	for _, body := range []string{`{}`, `{"embedding":{"values":[]}}`, `{"embedding":{"values":[null]}}`, `{"embedding":{"values":["bad"]}}`} {
 		if _, _, err := DecodeEmbedding([]byte(body), false); err == nil {
