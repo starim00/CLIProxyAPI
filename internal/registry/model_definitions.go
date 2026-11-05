@@ -55,7 +55,20 @@ func GetGeminiModels() []*ModelInfo {
 
 // GetGeminiVertexModels returns Gemini model definitions for Vertex AI.
 func GetGeminiVertexModels() []*ModelInfo {
-	return cloneModelInfos(getModels().Vertex)
+	models := cloneModelInfos(getModels().Vertex)
+	// Keep native TTS available even when the remote catalog omits it.
+	for _, model := range models {
+		if model != nil && model.ID == "gemini-3.8-flash-tts" {
+			return models
+		}
+	}
+	return append(models, &ModelInfo{
+		ID: "gemini-3.8-flash-tts", Object: "model", OwnedBy: "google", Type: "gemini",
+		Name: "models/gemini-3.8-flash-tts", DisplayName: "Gemini 3.8 Flash TTS",
+		InputTokenLimit: 8192, OutputTokenLimit: 16384,
+		SupportedGenerationMethods: []string{"generateContent", "streamGenerateContent"},
+		SupportedInputModalities:   []string{"TEXT"}, SupportedOutputModalities: []string{"AUDIO"},
+	})
 }
 
 // GetAIStudioModels returns model definitions for AI Studio.
