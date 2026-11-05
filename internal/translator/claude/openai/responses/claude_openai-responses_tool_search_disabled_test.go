@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -86,7 +87,15 @@ func TestToolSearchDisabledMatchesDevGolden(t *testing.T) {
 				t.Fatalf("no dev golden for %s", c.Name)
 			}
 			got := renderToolSearchGolden(fixtures, c)
-			if got.Request != want.Request || got.RequestError != want.RequestError {
+			// Raw nested tool schemas may retain different whitespace after JSON library migration.
+			var gotRequest, wantRequest bytes.Buffer
+			if err := json.Compact(&gotRequest, []byte(got.Request)); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Compact(&wantRequest, []byte(want.Request)); err != nil {
+				t.Fatal(err)
+			}
+			if gotRequest.String() != wantRequest.String() || got.RequestError != want.RequestError {
 				t.Fatalf("request differs from dev\n got: %s %s\nwant: %s %s", got.Request, got.RequestError, want.Request, want.RequestError)
 			}
 			if strings.Join(got.Stream, "\n") != strings.Join(want.Stream, "\n") {
