@@ -14,10 +14,9 @@ import (
 	"net/http"
 	"strings"
 
+	gjson "github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 const antiTruncationV2ToolPrefix = "agw_emit_"
@@ -103,7 +102,8 @@ func injectAntiTruncationV2Messages(body []byte, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	out, err := sjson.SetBytes(body, "messages", append(messages, control))
+	doc := gjson.NewDoc(body)
+	err = doc.Set("messages", append(messages, control))
 	if err != nil {
 		return nil, err
 	}
@@ -117,15 +117,17 @@ func injectAntiTruncationV2Messages(body []byte, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	out, err = sjson.SetBytes(out, "tools", append(tools, tool))
+	err = doc.Set("tools", append(tools, tool))
 	if err != nil {
 		return nil, err
 	}
 	choice := gjson.GetBytes(body, "tool_choice")
 	if !choice.Exists() || choice.String() == "none" {
-		return sjson.SetBytes(out, "tool_choice", "auto")
+		if err = doc.Set("tool_choice", "auto"); err != nil {
+			return nil, err
+		}
 	}
-	return out, nil
+	return doc.Bytes(), nil
 }
 
 func prepareAntiTruncationV2(cfg *config.Config, model string, body []byte, root string, stream bool, name string) ([]byte, *AntiTruncation, error) {
@@ -140,6 +142,7 @@ func prepareAntiTruncationV2(cfg *config.Config, model string, body []byte, root
 		prefix = root + "."
 	}
 	if name == "" {
+		doc := gjson.NewDoc(body)
 		existing := map[string]bool{}
 		for _, tool := range gjson.GetBytes(body, prefix+"tools").Array() {
 			for _, field := range []string{"functionDeclarations", "function_declarations"} {
@@ -153,26 +156,27 @@ func prepareAntiTruncationV2(cfg *config.Config, model string, body []byte, root
 		if err != nil {
 			return nil, nil, err
 		}
-		body, err = sjson.SetBytes(body, prefix+"tools.-1", map[string]any{"functionDeclarations": []any{antiTruncationV2Declaration(name)}})
+		err = doc.Set(prefix+"tools.-1", map[string]any{"functionDeclarations": []any{antiTruncationV2Declaration(name)}})
 		if err != nil {
 			return nil, nil, err
 		}
 		contents := gjson.GetBytes(body, prefix+"contents").Array()
 		if len(contents) == 0 || contents[len(contents)-1].Get("role").String() == "model" {
-			body, err = sjson.SetBytes(body, prefix+"contents.-1", map[string]any{"role": "user", "parts": []any{map[string]string{"text": antiTruncationV2Instruction(name)}}})
+			err = doc.Set(prefix+"contents.-1", map[string]any{"role": "user", "parts": []any{map[string]string{"text": antiTruncationV2Instruction(name)}}})
 		} else {
-			body, err = sjson.SetBytes(body, prefix+"systemInstruction.parts.-1", map[string]string{"text": antiTruncationV2Instruction(name)})
+			err = doc.Set(prefix+"systemInstruction.parts.-1", map[string]string{"text": antiTruncationV2Instruction(name)})
 		}
 		if err != nil {
 			return nil, nil, err
 		}
 		mode := prefix + "toolConfig.functionCallingConfig.mode"
 		if m := gjson.GetBytes(body, mode).String(); m == "" || m == "NONE" {
-			body, err = sjson.SetBytes(body, mode, "AUTO")
+			err = doc.Set(mode, "AUTO")
 			if err != nil {
 				return nil, nil, err
 			}
 		}
+		body = doc.Bytes()
 	}
 	out, a, err := prepareAntiTruncation(cfg, model, body, root, stream, name)
 	return out, a, err

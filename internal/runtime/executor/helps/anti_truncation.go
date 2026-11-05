@@ -12,13 +12,26 @@ import (
 	"path"
 	"strings"
 
+	gjson "github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	"github.com/tidwall/gjson"
 )
 
 // AntiTruncationModelPrefix exposes opt-in variants without changing ordinary models.
 const AntiTruncationModelPrefix = "抗截断/"
+
+// PrepareAntiTruncationDoc preserves the upstream document pipeline. Selected
+// requests retain a pre-finalizer snapshot for empty-response retries.
+func PrepareAntiTruncationDoc(cfg *config.Config, model string, doc *gjson.Doc, root string, stream bool, opts coreexecutor.Options) (*gjson.Doc, *AntiTruncation, error) {
+	if enabled, _ := opts.Metadata[coreexecutor.AntiTruncationMetadataKey].(bool); !enabled {
+		return doc, nil, nil
+	}
+	body, anti, err := PrepareAntiTruncationForRequest(cfg, model, doc.Bytes(), root, stream, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	return gjson.NewDoc(body), anti, nil
+}
 
 // AntiTruncationMatches checks the configured upstream model allowlist.
 func AntiTruncationMatches(c config.AntiTruncationConfig, model string) bool {

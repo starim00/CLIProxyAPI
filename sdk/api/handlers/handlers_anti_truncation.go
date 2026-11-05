@@ -6,12 +6,11 @@ import (
 	"net/http"
 	"strings"
 
+	gjson "github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 func (h *BaseAPIHandler) antiTruncationAvailable(model string) bool {
@@ -101,11 +100,11 @@ func (h *BaseAPIHandler) resolveAntiTruncationModel(model string, body []byte, p
 		return "", nil, false, antiTruncationRequestError()
 	}
 	if gjson.GetBytes(body, "model").Exists() {
-		var err error
-		body, err = sjson.SetBytes(body, "model", model)
-		if err != nil {
+		doc := gjson.NewDoc(body)
+		if err := doc.Set("model", model); err != nil {
 			return "", nil, false, antiTruncationRequestError()
 		}
+		body = doc.Bytes()
 	}
 	return model, body, true, nil
 }

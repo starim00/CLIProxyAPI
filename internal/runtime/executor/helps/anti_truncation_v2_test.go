@@ -12,9 +12,9 @@ import (
 	"strings"
 	"testing"
 
+	gjson "github.com/MoeForge/moego/ojson"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestAntiTruncationV2Injection(t *testing.T) {
