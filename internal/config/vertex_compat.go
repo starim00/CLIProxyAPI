@@ -13,6 +13,8 @@ import (
 //
 // Example services: zenmux.ai and similar Vertex-compatible providers.
 type VertexCompatKey struct {
+	// Name is an optional display label for this key, independent of its group.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
 	// APIKey is the authentication key for accessing the Vertex-compatible API.
 	// Maps to the x-goog-api-key header.
 	APIKey string `yaml:"api-key" json:"api-key"`
