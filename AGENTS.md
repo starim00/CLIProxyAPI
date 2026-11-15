@@ -6,6 +6,12 @@ Go 1.26+ proxy server providing OpenAI/Gemini/Claude/Codex compatible APIs with 
 - GitHub: https://github.com/router-for-me/CLIProxyAPI
 
 ## Commands
+
+For this fork's NAS releases, follow `docs/nas-release.md` and use `Dockerfile.nas`.
+Run tests appropriate to the changed behavior once on the target platform. Full
+tests belong in CI or broad upstream integration checks, not every Docker build.
+Do not repeat a full Windows suite, full Linux suite, and full candidate/live API
+matrix for a small configuration or UI change. Test-only changes need no NAS restart.
 ```bash
 gofmt -w . # Format (required after Go changes)
 go build -o cli-proxy-api ./cmd/server # Build
