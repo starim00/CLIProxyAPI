@@ -103,7 +103,17 @@ func GetKimiModels() []*ModelInfo {
 
 // GetAntigravityModels returns the standard Antigravity model definitions.
 func GetAntigravityModels() []*ModelInfo {
-	return cloneModelInfos(getModels().Antigravity)
+	models := cloneModelInfos(getModels().Antigravity)
+	const sonar = "gemini-4-hydrogen-sonar"
+	for _, model := range models {
+		if model != nil && model.ID == sonar {
+			return models
+		}
+	}
+	return append(models, &ModelInfo{
+		ID: sonar, Name: sonar, Object: "model", OwnedBy: "antigravity",
+		Type: "antigravity", DisplayName: "Gemini 4 Hydrogen Sonar",
+	})
 }
 
 var staticDevinModels = []*ModelInfo{
