@@ -107,6 +107,9 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	if opts.Alt == "embeddings" {
 		return e.executeEmbeddings(ctx, auth, req, opts)
 	}
+	if opts.Alt == "decisions" {
+		return e.executeNativeJSON(ctx, auth, req, opts, "decisions")
+	}
 	ctx = helps.EnsureSessionContext(ctx, opts, req.Payload)
 	if endpointPath := openAICompatImageEndpointPath(opts); endpointPath != "" {
 		return e.executeImages(ctx, auth, req, opts, endpointPath)

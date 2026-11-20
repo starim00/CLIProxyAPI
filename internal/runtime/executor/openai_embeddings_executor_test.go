@@ -19,6 +19,38 @@ import (
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
+func TestPrefixedDecisionsRouting(t *testing.T) {
+	const model = "oai-api/gpt-6-luna"
+	const questions = `[{"type":"predicate","name":"test","instructions":"Is the input a greeting?"}]`
+	const answer = `{"answers":[{"type":"predicate","name":"test","probability":0.99}],"model":"gpt-6-luna"}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/decisions" || r.Header.Get("Authorization") != "Bearer native-key" ||
+			ojson.GetBytes(body, "model").String() != "gpt-6-luna" || ojson.GetBytes(body, "questions").Raw != questions || ojson.GetBytes(body, "input").String() != "hello" {
+			t.Errorf("unexpected Decisions request on %s", r.URL.Path)
+		}
+		_, _ = io.WriteString(w, answer)
+	}))
+	defer server.Close()
+	cfg := &config.Config{SDKConfig: config.SDKConfig{ForceModelPrefix: true}}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(cfg)
+	manager.RegisterExecutor(NewCodexAutoExecutor(cfg))
+	auth := &coreauth.Auth{ID: t.Name(), Provider: "codex", Prefix: "oai-api", Status: coreauth.StatusActive, Attributes: map[string]string{"api_key": "native-key", "base_url": server.URL + "/v1"}}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: model, MetadataModelID: "gpt-6-luna"}})
+	defer registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	router := gin.New()
+	router.POST("/v1/decisions", openai.NewOpenAIAPIHandler(handlers.NewBaseAPIHandlers(&cfg.SDKConfig, manager)).Decisions)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("POST", "/v1/decisions", strings.NewReader(fmt.Sprintf(`{"model":%q,"input":"hello","questions":%s}`, model, questions))))
+	if w.Code != http.StatusOK || w.Body.String() != answer {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestNativeOpenAIEmbeddingsRouting(t *testing.T) {
 	for _, provider := range []string{"arbitrary-provider", "codex"} {
 		for _, prefix := range []string{"", "tenant", "private/team"} {

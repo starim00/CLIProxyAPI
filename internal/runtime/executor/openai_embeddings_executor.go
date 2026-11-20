@@ -16,13 +16,24 @@ import (
 
 func (e *CodexExecutor) SupportsEmbeddings() bool { return true }
 
+func (*CodexExecutor) SupportsDecisions() bool        { return true }
+func (*CodexAutoExecutor) SupportsDecisions() bool    { return true }
+func (*OpenAICompatExecutor) SupportsDecisions() bool { return true }
+
 func (e *OpenAICompatExecutor) executeEmbeddings(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (result coreexecutor.Response, err error) {
-	reporter := helps.NewExecutorUsageReporter(ctx, e, req.Model, auth)
-	defer reporter.TrackFailure(ctx, &err)
 	if _, err = helps.ParseOpenAIEmbeddingRequest(req.Payload); err != nil {
 		return result, statusErr{code: 400, msg: err.Error()}
 	}
-	base, _ := e.resolveCredentials(auth)
+	return e.executeNativeJSON(ctx, auth, req, opts, "embeddings")
+}
+
+func (e *OpenAICompatExecutor) executeNativeJSON(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options, operation string) (result coreexecutor.Response, err error) {
+	reporter := helps.NewExecutorUsageReporter(ctx, e, req.Model, auth)
+	defer reporter.TrackFailure(ctx, &err)
+	base, key := e.resolveCredentials(auth)
+	if operation == "decisions" && strings.TrimSpace(key) == "" {
+		return result, statusErr{code: 400, msg: "decisions require an OpenAI-compatible API key"}
+	}
 	if base == "" {
 		return result, statusErr{code: 401, msg: "missing provider baseURL"}
 	}
@@ -31,8 +42,8 @@ func (e *OpenAICompatExecutor) executeEmbeddings(ctx context.Context, auth *core
 		return result, err
 	}
 	original := doc.Bytes()
-	helps.ApplyPayloadConfigWithRequestForExecutorDoc(e.cfg, e.Identifier(), req.Model, "openai", opts.SourceFormat.String(), "", doc, original, helps.PayloadRequestedModel(opts, req.Model), "/v1/embeddings", opts.Headers)
-	r, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(base, "/")+"/embeddings", bytes.NewReader(doc.Bytes()))
+	helps.ApplyPayloadConfigWithRequestForExecutorDoc(e.cfg, e.Identifier(), req.Model, "openai", opts.SourceFormat.String(), "", doc, original, helps.PayloadRequestedModel(opts, req.Model), "/v1/"+operation, opts.Headers)
+	r, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(base, "/")+"/"+operation, bytes.NewReader(doc.Bytes()))
 	if err != nil {
 		return result, err
 	}
@@ -57,8 +68,11 @@ func (e *OpenAICompatExecutor) executeEmbeddings(ctx context.Context, auth *core
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return result, newOpenAICompatStatusError(response.StatusCode, response.Header, result.Payload)
 	}
-	if !ojson.ValidBytes(result.Payload) || !ojson.GetBytes(result.Payload, "data").IsArray() {
+	if operation == "embeddings" && (!ojson.ValidBytes(result.Payload) || !ojson.GetBytes(result.Payload, "data").IsArray()) {
 		return result, statusErr{code: 502, msg: "upstream returned an invalid embedding response"}
+	}
+	if operation == "decisions" && (!ojson.ValidBytes(result.Payload) || !ojson.GetBytes(result.Payload, "answers").IsArray()) {
+		return result, statusErr{code: 502, msg: "upstream returned an invalid decisions response"}
 	}
 	result.Headers = response.Header.Clone()
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(result.Payload))

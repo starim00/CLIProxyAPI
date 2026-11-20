@@ -82,7 +82,7 @@ func (e *CodexAutoExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 	if e == nil || e.httpExec == nil || e.wsExec == nil {
 		return cliproxyexecutor.Response{}, fmt.Errorf("codex auto executor: executor is nil")
 	}
-	if opts.Alt == "embeddings" {
+	if opts.Alt == "embeddings" || opts.Alt == "decisions" {
 		return e.httpExec.Execute(ctx, auth, req, opts)
 	}
 	if cliproxyexecutor.DownstreamWebsocket(ctx) && codexWebsocketsEnabled(auth) {

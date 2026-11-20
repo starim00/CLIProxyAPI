@@ -99,6 +99,9 @@ func (e *CodexExecutor) shouldCompactCompatResponsesTrigger(isCompat bool, req c
 }
 
 func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	if opts.Alt == "decisions" {
+		return NewOpenAICompatExecutor(e.Identifier(), e.cfg).executeNativeJSON(ctx, auth, req, opts, "decisions")
+	}
 	if opts.Alt == "embeddings" {
 		if auth == nil || strings.TrimSpace(auth.Attributes["api_key"]) == "" || strings.TrimSpace(auth.Attributes["base_url"]) == "" {
 			return resp, statusErr{code: 400, msg: "embeddings require an API key and explicit OpenAI-compatible base URL; Codex OAuth is not supported"}
