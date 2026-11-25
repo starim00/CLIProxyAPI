@@ -34,6 +34,8 @@ import (
 const (
 	// vertexAPIVersion aligns with current public Vertex Generative AI API.
 	vertexAPIVersion = "v1"
+	// vertexImagenMaxResponseBytes bounds the single JSON response returned by Imagen.
+	vertexImagenMaxResponseBytes = 64 << 20
 )
 
 // isImagenModel checks if the model name is an Imagen image generation model.
@@ -171,6 +173,41 @@ func convertToImagenRequest(payload []byte) ([]byte, error) {
 	}
 
 	return json.Marshal(imagenReq)
+}
+
+func (e *GeminiVertexExecutor) translateImagenRequest(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, model string, stream bool) (body, original []byte, err error) {
+	from := opts.SourceFormat
+	to := sdktranslator.FromString("gemini")
+	translated, errTranslate := helps.TranslateRequestReturningError(ctx, opts.Headers, e.cfg, from, to, model, req.Payload, stream, false)
+	if errTranslate != nil {
+		return nil, nil, errTranslate
+	}
+	body, err = convertToImagenRequest(translated)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	originalPayload := req.Payload
+	if len(opts.OriginalRequest) > 0 {
+		originalPayload = opts.OriginalRequest
+	}
+	translatedOriginal, errTranslate := helps.TranslateRequestReturningError(ctx, opts.Headers, e.cfg, from, to, model, originalPayload, stream, false)
+	if errTranslate != nil {
+		return nil, nil, errTranslate
+	}
+	original, err = convertToImagenRequest(translatedOriginal)
+	return body, original, err
+}
+
+func readVertexImagenResponse(body io.Reader) ([]byte, error) {
+	data, errRead := io.ReadAll(io.LimitReader(body, vertexImagenMaxResponseBytes+1))
+	if errRead != nil {
+		return nil, errRead
+	}
+	if len(data) > vertexImagenMaxResponseBytes {
+		return nil, fmt.Errorf("vertex imagen: response exceeds %d bytes", vertexImagenMaxResponseBytes)
+	}
+	return data, nil
 }
 
 // GeminiVertexExecutor sends requests to Vertex AI Gemini endpoints using service account credentials.
@@ -431,23 +468,21 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
 
+	action := getVertexAction(baseModel, false)
+	if req.Metadata != nil {
+		if a, _ := req.Metadata["action"].(string); a == "countTokens" {
+			action = "countTokens"
+		}
+	}
 	var body []byte
 	var originalTranslated []byte
 	var doc *ojson.Doc
 
 	// Handle Imagen models with special request format
-	if isImagenModel(baseModel) {
-		imagenBody, errImagen := convertToImagenRequest(req.Payload)
-		if errImagen != nil {
-			return resp, errImagen
-		}
-		body = imagenBody
-		originalTranslated = append([]byte(nil), imagenBody...)
-		if len(opts.OriginalRequest) > 0 {
-			originalTranslated, errImagen = convertToImagenRequest(opts.OriginalRequest)
-			if errImagen != nil {
-				return resp, errImagen
-			}
+	if isImagenModel(baseModel) && action != "countTokens" {
+		body, originalTranslated, err = e.translateImagenRequest(ctx, req, opts, baseModel, false)
+		if err != nil {
+			return resp, err
 		}
 		doc = ojson.NewDoc(body)
 	} else {
@@ -476,13 +511,9 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
 		internalsignature.SanitizeGeminiRequestThoughtSignaturesDoc(doc, "contents")
 	}
 
-	action := getVertexAction(baseModel, false)
-	if req.Metadata != nil {
-		if a, _ := req.Metadata["action"].(string); a == "countTokens" {
-			action = "countTokens"
-		}
+	if action != "countTokens" || !isImagenModel(baseModel) {
+		helps.EnsureGeminiLeadingUserContentDoc(doc, "contents")
 	}
-	helps.EnsureGeminiLeadingUserContentDoc(doc, "contents")
 	if action != "countTokens" {
 		helps.DropGeminiTrailingThoughtOnlyContentDoc(doc, "contents")
 		helps.EnsureGeminiTrailingUserContentDoc(doc, "contents")
@@ -649,30 +680,43 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
 		originalPayloadSource = opts.OriginalRequest
 	}
 	originalPayload := originalPayloadSource
-	originalTranslated := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, false)
-	body, err := helps.TranslateRequestReturningError(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, false, false)
-	if err != nil {
-		return resp, err
-	}
-
-	doc := ojson.NewDoc(body)
-	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier()); err != nil {
-		return resp, err
-	}
-
-	fixGeminiImageAspectRatioDoc(baseModel, doc)
-	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
-	requestPath := helps.PayloadRequestPath(opts)
-	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
-	internalsignature.SanitizeGeminiRequestThoughtSignaturesDoc(doc, "contents")
-
 	action := getVertexAction(baseModel, false)
 	if req.Metadata != nil {
 		if a, _ := req.Metadata["action"].(string); a == "countTokens" {
 			action = "countTokens"
 		}
 	}
-	helps.EnsureGeminiLeadingUserContentDoc(doc, "contents")
+	var body []byte
+	var originalTranslated []byte
+	var doc *ojson.Doc
+	if isImagenModel(baseModel) && action != "countTokens" {
+		body, originalTranslated, err = e.translateImagenRequest(ctx, req, opts, baseModel, false)
+		if err != nil {
+			return resp, err
+		}
+		doc = ojson.NewDoc(body)
+	} else {
+		originalTranslated = helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, false)
+		body, err = helps.TranslateRequestReturningError(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, false, false)
+		if err != nil {
+			return resp, err
+		}
+
+		doc = ojson.NewDoc(body)
+		if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier()); err != nil {
+			return resp, err
+		}
+
+		fixGeminiImageAspectRatioDoc(baseModel, doc)
+		helps.SetStringIfDifferentDoc(doc, "model", baseModel)
+		internalsignature.SanitizeGeminiRequestThoughtSignaturesDoc(doc, "contents")
+	}
+	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
+	requestPath := helps.PayloadRequestPath(opts)
+
+	if action != "countTokens" || !isImagenModel(baseModel) {
+		helps.EnsureGeminiLeadingUserContentDoc(doc, "contents")
+	}
 	if action != "countTokens" {
 		helps.DropGeminiTrailingThoughtOnlyContentDoc(doc, "contents")
 		helps.EnsureGeminiTrailingUserContentDoc(doc, "contents")
@@ -686,7 +730,9 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
 			return resp, errReplay
 		}
 	}
-	helps.StripVertexOpenAIResponsesToolCallIDsDoc(doc, from.String())
+	if !isImagenModel(baseModel) {
+		helps.StripVertexOpenAIResponsesToolCallIDsDoc(doc, from.String())
+	}
 
 	// For API key auth, use simpler URL format without project/location.
 	// The helper honors base URLs that already encode "/publishers/..." so
@@ -774,6 +820,9 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
 		return resp, errRead
 	}
 	reporter.ObserveResponseModel(data)
+	if isImagenModel(baseModel) {
+		data = convertImagenToGeminiResponse(data, baseModel)
+	}
 	if blockMsg, blocked := geminiPromptBlockErrorMessage(data); blocked {
 		err = statusErr{code: http.StatusBadGateway, msg: blockMsg}
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
@@ -827,26 +876,39 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 		originalPayloadSource = opts.OriginalRequest
 	}
 	originalPayload := originalPayloadSource
-	originalTranslated := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, true)
-	body, err := helps.TranslateRequestReturningError(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, true, false)
-	if err != nil {
-		return nil, err
-	}
+	var body []byte
+	var originalTranslated []byte
+	var doc *ojson.Doc
+	if isImagenModel(baseModel) {
+		body, originalTranslated, err = e.translateImagenRequest(ctx, req, opts, baseModel, true)
+		if err != nil {
+			return nil, err
+		}
+		doc = ojson.NewDoc(body)
+	} else {
+		originalTranslated = helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, true)
+		body, err = helps.TranslateRequestReturningError(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, true, false)
+		if err != nil {
+			return nil, err
+		}
 
-	doc := ojson.NewDoc(body)
-	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier()); err != nil {
-		return nil, err
-	}
+		doc = ojson.NewDoc(body)
+		if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier()); err != nil {
+			return nil, err
+		}
 
-	fixGeminiImageAspectRatioDoc(baseModel, doc)
+		fixGeminiImageAspectRatioDoc(baseModel, doc)
+		helps.SetStringIfDifferentDoc(doc, "model", baseModel)
+		internalsignature.SanitizeGeminiRequestThoughtSignaturesDoc(doc, "contents")
+	}
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
-	internalsignature.SanitizeGeminiRequestThoughtSignaturesDoc(doc, "contents")
 
 	action := getVertexAction(baseModel, true)
-	helps.DropGeminiTrailingThoughtOnlyContentDoc(doc, "contents")
-	helps.EnsureGeminiBoundaryUserContentDoc(doc, "contents")
+	if !isImagenModel(baseModel) {
+		helps.DropGeminiTrailingThoughtOnlyContentDoc(doc, "contents")
+		helps.EnsureGeminiBoundaryUserContentDoc(doc, "contents")
+	}
 	replayScope := antigravityReasoningReplayScope{}
 	var replayRequestPayload []byte
 	if !isImagenModel(baseModel) && antigravityUsesReasoningReplayCache(baseModel) {
@@ -856,7 +918,9 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 			return nil, errReplay
 		}
 	}
-	helps.StripVertexOpenAIResponsesToolCallIDsDoc(doc, from.String())
+	if !isImagenModel(baseModel) {
+		helps.StripVertexOpenAIResponsesToolCallIDsDoc(doc, from.String())
+	}
 	baseURL := vertexBaseURL(location)
 	url := fmt.Sprintf("%s/%s/projects/%s/locations/%s/publishers/google/models/%s:%s", baseURL, vertexAPIVersion, projectID, location, baseModel, action)
 	// Imagen models don't support streaming, skip SSE params
@@ -949,8 +1013,25 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 				log.Errorf("vertex executor: close response body error: %v", errClose)
 			}
 		}()
-		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(nil, streamScannerBuffer)
+		var scanner *bufio.Scanner
+		var imagenLine []byte
+		if isImagenModel(baseModel) {
+			imagenData, errRead := readVertexImagenResponse(httpResp.Body)
+			helps.AppendAPIResponseChunk(ctx, e.cfg, imagenData)
+			if errRead != nil {
+				helps.RecordAPIResponseError(ctx, e.cfg, errRead)
+				reporter.PublishFailure(ctx, errRead)
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Err: errRead}:
+				case <-ctx.Done():
+				}
+				return
+			}
+			imagenLine = convertImagenToGeminiResponse(imagenData, baseModel)
+		} else {
+			scanner = bufio.NewScanner(httpResp.Body)
+			scanner.Buffer(nil, streamScannerBuffer)
+		}
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
 		var streamUsage helps.StreamUsageBuffer
 		streamUsage.SetRequestPayload(body)
@@ -1028,14 +1109,31 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 				return emitTranslatedLine(line)
 			}
 		}
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+		for {
+			var line []byte
+			if isImagenModel(baseModel) {
+				if imagenLine == nil {
+					break
+				}
+				line = imagenLine
+				imagenLine = nil
+			} else {
+				if !scanner.Scan() {
+					break
+				}
+				line = scanner.Bytes()
+			}
+			if !isImagenModel(baseModel) {
+				helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+			}
 			if replayAccumulator != nil {
 				replayAccumulator.ObserveSSELine(line)
 			}
 			reporter.ObserveResponseModel(line)
 			rawPayload := helps.JSONPayload(line)
+			if len(rawPayload) > 0 && len(pendingFilterLine) > 0 && !ojson.ValidBytes(rawPayload) {
+				continue
+			}
 			if len(rawPayload) > 0 && len(pendingFilterLine) > 0 {
 				flushed := pendingFilterLine
 				pendingFilterLine = nil
@@ -1072,7 +1170,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 				return
 			}
 		}
-		if pendingFilterMsg != "" && scanner.Err() == nil && !sawFinishReason {
+		if pendingFilterMsg != "" && (isImagenModel(baseModel) || scanner.Err() == nil) && !sawFinishReason {
 			filterErr := statusErr{code: http.StatusBadRequest, msg: pendingFilterMsg}
 			helps.RecordAPIResponseError(ctx, e.cfg, filterErr)
 			if !streamUsage.PublishFailure(ctx, reporter, filterErr) {
@@ -1084,14 +1182,14 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 			}
 			return
 		}
-		if len(pendingFilterLine) > 0 {
+		if scanner.Err() == nil && len(pendingFilterLine) > 0 {
 			if !guardAndEmitLine(pendingFilterLine) {
 				return
 			}
 			pendingFilterLine = nil
 			pendingFilterMsg = ""
 		}
-		if scanner.Err() == nil && ctx.Err() == nil && zeroOutputGuard.HasAbnormalFinish() {
+		if (isImagenModel(baseModel) || scanner.Err() == nil) && ctx.Err() == nil && zeroOutputGuard.HasAbnormalFinish() {
 			_, action, finishReason := zeroOutputGuard.Finalize()
 			if action == helps.GeminiZeroOutputEmitErrorThenFail {
 				errFrame := zeroOutputGuard.AbnormalFrame()
@@ -1111,7 +1209,12 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 		if helps.StopTranslatedClaudeStream(ctx, &streamErr, reporter, &streamUsage, out) {
 			return
 		}
-		if errScan := scanner.Err(); errScan != nil {
+		if errScan := func() error {
+			if scanner == nil {
+				return nil
+			}
+			return scanner.Err()
+		}(); errScan != nil {
 			if terminalDelivered && errors.Is(errScan, context.Canceled) {
 				return
 			}
@@ -1199,26 +1302,39 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 		originalPayloadSource = opts.OriginalRequest
 	}
 	originalPayload := originalPayloadSource
-	originalTranslated := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, true)
-	body, err := helps.TranslateRequestReturningError(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, true, false)
-	if err != nil {
-		return nil, err
-	}
+	var body []byte
+	var originalTranslated []byte
+	var doc *ojson.Doc
+	if isImagenModel(baseModel) {
+		body, originalTranslated, err = e.translateImagenRequest(ctx, req, opts, baseModel, true)
+		if err != nil {
+			return nil, err
+		}
+		doc = ojson.NewDoc(body)
+	} else {
+		originalTranslated = helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, true)
+		body, err = helps.TranslateRequestReturningError(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, true, false)
+		if err != nil {
+			return nil, err
+		}
 
-	doc := ojson.NewDoc(body)
-	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier()); err != nil {
-		return nil, err
-	}
+		doc = ojson.NewDoc(body)
+		if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier()); err != nil {
+			return nil, err
+		}
 
-	fixGeminiImageAspectRatioDoc(baseModel, doc)
+		fixGeminiImageAspectRatioDoc(baseModel, doc)
+		helps.SetStringIfDifferentDoc(doc, "model", baseModel)
+		internalsignature.SanitizeGeminiRequestThoughtSignaturesDoc(doc, "contents")
+	}
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
-	internalsignature.SanitizeGeminiRequestThoughtSignaturesDoc(doc, "contents")
 
 	action := getVertexAction(baseModel, true)
-	helps.DropGeminiTrailingThoughtOnlyContentDoc(doc, "contents")
-	helps.EnsureGeminiBoundaryUserContentDoc(doc, "contents")
+	if !isImagenModel(baseModel) {
+		helps.DropGeminiTrailingThoughtOnlyContentDoc(doc, "contents")
+		helps.EnsureGeminiBoundaryUserContentDoc(doc, "contents")
+	}
 	replayScope := antigravityReasoningReplayScope{}
 	var replayRequestPayload []byte
 	if !isImagenModel(baseModel) && antigravityUsesReasoningReplayCache(baseModel) {
@@ -1228,7 +1344,9 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 			return nil, errReplay
 		}
 	}
-	helps.StripVertexOpenAIResponsesToolCallIDsDoc(doc, from.String())
+	if !isImagenModel(baseModel) {
+		helps.StripVertexOpenAIResponsesToolCallIDsDoc(doc, from.String())
+	}
 	// For API key auth, use simpler URL format without project/location
 	url := vertexAPIKeyModelsURL(baseURL, baseModel, action)
 	// Imagen models don't support streaming, skip SSE params
@@ -1318,8 +1436,25 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 				log.Errorf("vertex executor: close response body error: %v", errClose)
 			}
 		}()
-		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(nil, streamScannerBuffer)
+		var scanner *bufio.Scanner
+		var imagenLine []byte
+		if isImagenModel(baseModel) {
+			imagenData, errRead := readVertexImagenResponse(httpResp.Body)
+			helps.AppendAPIResponseChunk(ctx, e.cfg, imagenData)
+			if errRead != nil {
+				helps.RecordAPIResponseError(ctx, e.cfg, errRead)
+				reporter.PublishFailure(ctx, errRead)
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Err: errRead}:
+				case <-ctx.Done():
+				}
+				return
+			}
+			imagenLine = convertImagenToGeminiResponse(imagenData, baseModel)
+		} else {
+			scanner = bufio.NewScanner(httpResp.Body)
+			scanner.Buffer(nil, streamScannerBuffer)
+		}
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
 		var streamUsage helps.StreamUsageBuffer
 		streamUsage.SetRequestPayload(body)
@@ -1397,14 +1532,31 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 				return emitTranslatedLine(line)
 			}
 		}
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+		for {
+			var line []byte
+			if isImagenModel(baseModel) {
+				if imagenLine == nil {
+					break
+				}
+				line = imagenLine
+				imagenLine = nil
+			} else {
+				if !scanner.Scan() {
+					break
+				}
+				line = scanner.Bytes()
+			}
+			if !isImagenModel(baseModel) {
+				helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+			}
 			if replayAccumulator != nil {
 				replayAccumulator.ObserveSSELine(line)
 			}
 			reporter.ObserveResponseModel(line)
 			rawPayload := helps.JSONPayload(line)
+			if len(rawPayload) > 0 && len(pendingFilterLine) > 0 && !ojson.ValidBytes(rawPayload) {
+				continue
+			}
 			if len(rawPayload) > 0 && len(pendingFilterLine) > 0 {
 				flushed := pendingFilterLine
 				pendingFilterLine = nil
@@ -1441,7 +1593,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 				return
 			}
 		}
-		if pendingFilterMsg != "" && scanner.Err() == nil && !sawFinishReason {
+		if pendingFilterMsg != "" && (isImagenModel(baseModel) || scanner.Err() == nil) && !sawFinishReason {
 			filterErr := statusErr{code: http.StatusBadRequest, msg: pendingFilterMsg}
 			helps.RecordAPIResponseError(ctx, e.cfg, filterErr)
 			if !streamUsage.PublishFailure(ctx, reporter, filterErr) {
@@ -1453,14 +1605,14 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 			}
 			return
 		}
-		if len(pendingFilterLine) > 0 {
+		if scanner.Err() == nil && len(pendingFilterLine) > 0 {
 			if !guardAndEmitLine(pendingFilterLine) {
 				return
 			}
 			pendingFilterLine = nil
 			pendingFilterMsg = ""
 		}
-		if scanner.Err() == nil && ctx.Err() == nil && zeroOutputGuard.HasAbnormalFinish() {
+		if (isImagenModel(baseModel) || scanner.Err() == nil) && ctx.Err() == nil && zeroOutputGuard.HasAbnormalFinish() {
 			_, action, finishReason := zeroOutputGuard.Finalize()
 			if action == helps.GeminiZeroOutputEmitErrorThenFail {
 				errFrame := zeroOutputGuard.AbnormalFrame()
@@ -1480,7 +1632,12 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 		if helps.StopTranslatedClaudeStream(ctx, &streamErr, reporter, &streamUsage, out) {
 			return
 		}
-		if errScan := scanner.Err(); errScan != nil {
+		if errScan := func() error {
+			if scanner == nil {
+				return nil
+			}
+			return scanner.Err()
+		}(); errScan != nil {
 			if terminalDelivered && errors.Is(errScan, context.Canceled) {
 				return
 			}

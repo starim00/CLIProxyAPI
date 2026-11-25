@@ -1287,7 +1287,9 @@ func openAICompatStreamDataError(payload []byte, eventName string) (statusErr, b
 type statusErr struct {
 	code               int
 	msg                string
+	cause              error
 	retryAfter         *time.Duration
+	requestScoped      bool
 	credentialScoped   bool
 	streamTruncated    bool
 	transientRateLimit bool
@@ -1305,8 +1307,10 @@ func (e statusErr) Error() string {
 	}
 	return fmt.Sprintf("status %d", e.code)
 }
+func (e statusErr) Unwrap() error              { return e.cause }
 func (e statusErr) StatusCode() int            { return e.code }
 func (e statusErr) RetryAfter() *time.Duration { return e.retryAfter }
+func (e statusErr) IsRequestScoped() bool      { return e.requestScoped }
 func (e statusErr) IsCredentialScoped() bool   { return e.credentialScoped }
 
 // LogDiagnostic lets upstream failure logs explain a sanitized client message.
