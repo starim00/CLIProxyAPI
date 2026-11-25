@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -493,14 +494,45 @@ func (s *Service) antigravityHomeEnabled() bool {
 
 func filterAntigravityModels(models []*ModelInfo, hints antigravityModelCapabilityHints) []*ModelInfo {
 	filtered := make([]*ModelInfo, 0, len(models))
+	known := make(map[string]bool, len(models))
+	families := make(map[string]*ModelInfo)
 	for _, model := range models {
 		if model != nil {
+			id := normalizeAntigravityFetchedModelID(model.ID)
+			known[id] = true
+			families[id] = model
+			if family, _, ok := antigravityThinkingVariant(id); ok && families[family] == nil {
+				families[family] = model
+			}
 			if _, ok := hints.ModelIDs[normalizeAntigravityFetchedModelID(model.ID)]; ok {
 				filtered = append(filtered, model)
 			}
 		}
 	}
+	for _, id := range slices.Sorted(maps.Keys(hints.ModelIDs)) {
+		family, tier, ok := antigravityThinkingVariant(id)
+		if !ok || known[id] {
+			continue
+		}
+		model := ModelInfo{Object: "model", Type: "antigravity", OwnedBy: "antigravity"}
+		if template := families[family]; template != nil {
+			model = cloneModelInfoForCatalogRoute(template)
+		}
+		model.ID, model.Name, model.DisplayName = id, id, id
+		model.Description = family + " (" + tier + ")"
+		model.MetadataModelID = id
+		filtered = append(filtered, &model)
+	}
 	return filtered
+}
+
+func antigravityThinkingVariant(id string) (family, tier string, ok bool) {
+	for _, suffix := range []string{"tiered-xhigh", "tiered-high", "tiered-medium", "tiered-low", "minimal", "low", "medium", "high", "xhigh", "max", "thinking", "tiered"} {
+		if base, found := strings.CutSuffix(id, "-"+suffix); found && base != "" {
+			return base, suffix, true
+		}
+	}
+	return "", "", false
 }
 
 func (s *Service) antigravityModelsForHints(auth *coreauth.Auth, hints antigravityModelCapabilityHints) []*ModelInfo {
